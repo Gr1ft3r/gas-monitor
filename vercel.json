@@ -1,8 +1,8 @@
 {
-  "rewrites": [
-    {
-      "source": "/supabase-api/:match*",
-      "destination": "https://yqvqipzafmtduwkrxpjq.supabase.co"
-    }
-  ]
+    "rewrites": [
+        {
+            "source": "/supabase-api/:match*",
+            "destination": "https://yqvqipzafmtduwkrxpjq.supabase.co/:path*"
+        }
+    ]
 }
