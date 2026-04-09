@@ -231,7 +231,9 @@ function App() {
 
         <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg mb-5 shadow-sm">
           <h2 className="text-blue-800 font-bold text-sm mb-1 flex items-center gap-1"><span>ℹ️</span> About This Data</h2>
-          <p className="text-blue-900 text-xs leading-relaxed mb-3">Baseline prices are synced weekly with <strong>Department of Energy (DOE)</strong> advisories. This platform relies on <strong>local crowdsourcing</strong>.</p>
+          <p className="text-blue-900 text-xs leading-relaxed mb-3">Baseline prices are synced weekly with <strong>Department of Energy (DOE)</strong> advisories.
+            Because actual pump prices vary by region due to logistics costs, this platform relies on
+            <strong> local crowdsourcing</strong>. Help fellow drivers by verifying or updating prices when you fuel up!</p>
           <div className="bg-white/70 rounded px-2 py-1.5 border border-blue-100 inline-block">
             <p className="text-[10px] text-blue-800 font-bold uppercase tracking-wider">Last Database Update: <span className="text-blue-600 ml-1">{latestUpdate}</span></p>
           </div>
