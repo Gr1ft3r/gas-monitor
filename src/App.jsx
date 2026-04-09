@@ -5,6 +5,7 @@ function App() {
   const [rawPrices, setRawPrices] = useState([]);
   const [selectedBrand, setSelectedBrand] = useState('All');
   const [expandedStationId, setExpandedStationId] = useState(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const [stationName, setStationName] = useState('');
   const [cityName, setCityName] = useState('Baguio City');
@@ -161,7 +162,21 @@ function App() {
   });
 
   let groupedStations = Object.values(stationsMap);
-  if (selectedBrand !== 'All') groupedStations = groupedStations.filter(s => s.brand === selectedBrand);
+  
+  // 1. Filter by Brand (if not 'All')
+  if (selectedBrand !== 'All') {
+    groupedStations = groupedStations.filter(s => s.brand === selectedBrand);
+  }
+  
+  // 2. NEW: Filter by Search Query (if user typed something)
+  if (searchQuery.trim() !== '') {
+    groupedStations = groupedStations.filter(s => 
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+      s.city.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }
+  
+  // 3. Sort alphabetically
   groupedStations.sort((a, b) => a.name.localeCompare(b.name));
 
   const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Phoenix', 'Unioil', 'Independent'];
@@ -222,6 +237,30 @@ function App() {
         </div>
       </div>
 
+            {/* UX UPGRADE: Real-Time Search Bar */}
+      <div className="bg-gray-100 px-4 py-3 sticky top-[105px] z-10 shadow-sm border-b border-gray-200 backdrop-blur-md bg-gray-100/90">
+        <div className="relative max-w-md mx-auto">
+          <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-gray-400">
+            🔍
+          </span>
+          <input 
+            type="text" 
+            placeholder="Search stations, branches, or cities..." 
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block pl-10 p-2.5 shadow-inner"
+          />
+          {searchQuery && (
+            <button 
+              onClick={() => setSearchQuery('')}
+              className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600"
+            >
+              ✖
+            </button>
+          )}
+        </div>
+      </div>
+
       <main className="max-w-md mx-auto mt-4 px-4">
 
         {/* NEW UX UPGRADE: The Info & Disclaimer Banner */}
@@ -241,69 +280,93 @@ function App() {
           </div>
         </div>
 
-        <div className="flex flex-col gap-3">
-          {groupedStations.map(station => (
-            <div key={station.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+        <div className="flex flex-col gap-6">
+          {/* UX UPGRADE: Group stations by city when 'All' is selected, or display normally if a specific brand is selected */}
+          
+          {['Baguio City', 'La Trinidad', 'Tuba'].map(city => {
+            // Filter stations for the current city
+            const cityStations = groupedStations.filter(s => s.city === city);
+            
+            // If there are no stations for this city under the current brand filter, skip rendering it
+            if (cityStations.length === 0) return null;
 
-              <div onClick={() => setExpandedStationId(expandedStationId === station.id ? null : station.id)} className="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50">
-                <div>
-                  <h3 className="font-bold text-gray-800 text-md">{station.name}</h3>
-                  <p className="text-xs text-gray-500 mt-1">📍 {station.city}</p>
+            return (
+              <div key={city} className="flex flex-col gap-3">
+                
+                {/* City Section Header */}
+                <div className="flex items-center gap-2 pb-1 border-b-2 border-blue-800/10">
+                  <span className="text-blue-800 text-lg">📍</span>
+                  <h2 className="font-black text-gray-700 uppercase tracking-widest text-sm">
+                    {city}
+                  </h2>
+                  <span className="ml-auto text-xs font-bold text-gray-400 bg-gray-200 px-2 py-0.5 rounded-full">
+                    {cityStations.length}
+                  </span>
                 </div>
-                <div className="text-gray-400 font-bold text-xl">{expandedStationId === station.id ? '−' : '+'}</div>
-              </div>
 
-              {expandedStationId === station.id && (
-                <div className="bg-gray-50 border-t border-gray-200 p-4 flex flex-col gap-3">
-                  {station.prices.sort((a, b) => a.price - b.price).map(fuel => (
-                    // ... (keep your existing fuel card code here) ...
-                    <div key={fuel.id} className="flex flex-col bg-white p-3 rounded border border-gray-200 shadow-sm">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <p className="font-bold text-blue-800 text-sm flex items-center gap-2">
-                            {fuel.fuel_type}
-                            <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${fuel.status === 'Verified' ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-600'}`}>
-                              {fuel.status}
-                            </span>
-                          </p>
-                          <p className="text-xs text-gray-500 mt-1">{fuel.upvotes} Upvotes</p>
-                        </div>
-                        <div className="text-right">
-                          {fuel.out_of_stock_votes >= 3 ? (
-                            <p className="text-xl font-black text-red-600 line-through">OUT OF STOCK</p>
-                          ) : (
-                            <p className="text-xl font-black text-gray-900">₱{fuel.price.toFixed(2)}</p>
-                          )}
-                        </div>
+                {/* Render the Stations for this City */}
+                {cityStations.map(station => (
+                  <div key={station.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+                    <div onClick={() => setExpandedStationId(expandedStationId === station.id ? null : station.id)} className="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50">
+                      <div>
+                        <h3 className="font-bold text-gray-800 text-md">{station.name}</h3>
+                        {/* We removed the redundant 📍 city tag here since it's now in the header */}
+                        <p className="text-xs text-gray-400 font-medium mt-1">{station.prices.length} Fuel Types</p>
                       </div>
-
-                      <div className="flex justify-between mt-3 pt-2 border-t border-gray-100">
-                        <button onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
-                        <button onClick={(e) => { e.stopPropagation(); handleProposePrice(station.id, fuel.fuel_type); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
-                        <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🚩 Report Empty</button>
-                        {/* NEW UX UPGRADE: The Retired/Not Sold Button */}
-                        <button onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }} className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🗑️ Not Sold</button>
-                      </div>
+                      <div className="text-blue-600 font-bold text-xl">{expandedStationId === station.id ? '−' : '+'}</div>
                     </div>
-                  ))}
 
-                  {/* NEW UX UPGRADE: Add Missing Fuel Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setStationBrand(station.brand);
-                      setBranchName(station.name.replace(`${station.brand} - `, '').trim());
-                      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-                    }}
-                    className="w-full mt-1 py-2 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 border-dashed transition-colors"
-                  >
-                    + Add Missing Fuel Type
-                  </button>
+                    {/* Fuel Types Accordion (Unchanged logic) */}
+                    {expandedStationId === station.id && (
+                      <div className="bg-gray-50 border-t border-gray-200 p-4 flex flex-col gap-3">
+                        {station.prices.sort((a, b) => a.price - b.price).map(fuel => (
+                          <div key={fuel.id} className="flex flex-col bg-white p-3 rounded border border-gray-200 shadow-sm">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <p className="font-bold text-blue-800 text-sm flex items-center gap-2">
+                                  {fuel.fuel_type}
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${fuel.status === 'Verified' ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-600'}`}>
+                                    {fuel.status}
+                                  </span>
+                                </p>
+                                <p className="text-xs text-gray-500 mt-1">{fuel.upvotes} Upvotes</p>
+                              </div>
+                              <div className="text-right">
+                                {fuel.out_of_stock_votes >= 3 ? (
+                                  <p className="text-xl font-black text-red-600 line-through">OUT OF STOCK</p>
+                                ) : (
+                                  <p className="text-xl font-black text-gray-900">₱{fuel.price.toFixed(2)}</p>
+                                )}
+                              </div>
+                            </div>
 
-                </div>
-              )}
-            </div>
-          ))}
+                            <div className="flex justify-between mt-3 pt-2 border-t border-gray-100">
+                              <button onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
+                              <button onClick={(e) => { e.stopPropagation(); handleProposePrice(station.id, fuel.fuel_type); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
+                              <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🚩 Report Empty</button>
+                              <button onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }} className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🗑️ Not Sold</button>
+                            </div>
+                          </div>
+                        ))}
+
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setStationBrand(station.brand);
+                            setBranchName(station.name.replace(`${station.brand} - `, '').trim());
+                            window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                          }}
+                          className="w-full mt-1 py-2 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 border-dashed transition-colors"
+                        >
+                          + Add Missing Fuel Type
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })}
         </div>
 
         {/* Add Station or Fuel Form */}
