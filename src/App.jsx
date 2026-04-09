@@ -164,7 +164,7 @@ function App() {
   if (selectedBrand !== 'All') groupedStations = groupedStations.filter(s => s.brand === selectedBrand);
   groupedStations.sort((a, b) => a.name.localeCompare(b.name));
 
-  const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Independent'];
+  const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Phoenix', 'Unioil', 'Independent'];
 
   const fuelDictionary = {
     Petron: ['Blaze 100', 'XCS 95', 'Xtra Advance 93', 'Super Xtra 91', 'Turbo Diesel', 'Diesel Max', 'Gaas (Kerosene)'],
@@ -174,6 +174,8 @@ function App() {
     'Flying V': ['Rush 97', 'Thunder 95', 'Volt 91', 'Biodiesel'],
     SeaOil: ['Extreme 97', 'Extreme 95', 'Extreme U 91', 'Exceed Diesel'],
     Total: ['Excellium 95', 'Premier 91', 'Standard Diesel', 'Excellium Diesel'],
+    Phoenix: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
+    Unioil: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
     Default: ['Premium 95', 'Unleaded 91', 'Standard Diesel']
   };
 
