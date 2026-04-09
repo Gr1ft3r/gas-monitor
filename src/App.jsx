@@ -310,7 +310,33 @@ function App() {
           <p className="text-xs text-gray-500 mb-3">Add it below to help the community.</p>
 
           <form onSubmit={handleAddStation} className="flex flex-col gap-2">
-            {/* ... (keep your existing inputs here) ... */}
+            <div className="flex gap-2">
+              <select className="border p-2 rounded text-sm w-1/3 bg-gray-50 font-bold text-blue-800" value={stationBrand} onChange={(e) => { setStationBrand(e.target.value); setFuelType(''); }}>
+                <option value="Petron">Petron</option>
+                <option value="Shell">Shell</option>
+                <option value="Caltex">Caltex</option>
+                <option value="Cleanfuel">Cleanfuel</option>
+                <option value="Flying V">Flying V</option>
+                <option value="SeaOil">SeaOil</option>
+                <option value="Total">Total</option>
+                <option value="Independent">Independent</option>
+              </select>
+              <input type="text" placeholder="Branch (e.g. Loakan Road)" required className="border p-2 rounded text-sm w-2/3 bg-gray-50" value={branchName} onChange={(e) => setBranchName(e.target.value)} />
+            </div>
+
+            <select className="border p-2 rounded text-sm bg-gray-50" value={cityName} onChange={(e) => setCityName(e.target.value)}>
+              <option>Baguio City</option>
+              <option>La Trinidad</option>
+              <option>Tuba</option>
+            </select>
+
+            <div className="flex gap-2">
+              <select required className="border p-2 rounded text-sm w-1/2 bg-gray-50 text-gray-700" value={fuelType} onChange={(e) => setFuelType(e.target.value)}>
+                <option value="" disabled hidden>Select Fuel</option>
+                {availableFuels.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)} />
+            </div>
 
             <button type="submit" className="bg-blue-800 text-white font-bold py-2 rounded mt-2 hover:bg-blue-900">
               Submit Addition
