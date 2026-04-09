@@ -28,7 +28,7 @@ function App() {
       .neq('status', 'Archived')
       .neq('status', 'Pending_Admin')
       .neq('stations.status', 'Pending_Admin');
-      
+
     if (error) {
       setDbError(error.message);
     } else {
@@ -68,7 +68,7 @@ function App() {
 
     const isSuperAdmin = rawInput.endsWith('*');
     const newPrice = parseFloat(rawInput.replace('*', ''));
-    
+
     if (!isNaN(newPrice) && newPrice > 30 && newPrice < 250) {
       if (isSuperAdmin) await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelName).eq('status', 'Verified');
       await supabase.from('prices').insert([{
@@ -86,7 +86,7 @@ function App() {
     const deviceId = getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'out_of_stock' }]);
     if (logError && logError.code === '23505') { alert("Anti-Spam: You already reported this as Out of Stock!"); return; }
-    
+
     const votes = currentVotes ? currentVotes : 0;
     await supabase.from('prices').update({ out_of_stock_votes: votes + 1 }).eq('id', priceId);
     fetchPrices();
@@ -127,22 +127,26 @@ function App() {
     setBranchName(''); setPrice(''); setFuelType(''); fetchPrices();
   }
 
-  // --- DATA PREPARATION (Fixing the Reference Error) ---
+  // --- DATA PREPARATION ---
   const stationsMap = {};
   rawPrices.forEach(item => {
     const st = item.stations;
     if (!stationsMap[st.id]) {
       let brand = 'Independent';
-      if (st.name.includes('Petron')) brand = 'Petron';
-      else if (st.name.includes('Shell')) brand = 'Shell';
-      else if (st.name.includes('Caltex')) brand = 'Caltex';
-      else if (st.name.includes('Cleanfuel')) brand = 'Cleanfuel';
-      else if (st.name.includes('Total')) brand = 'Total';
-      else if (st.name.includes('Flying V')) brand = 'Flying V';
-      else if (st.name.includes('SeaOil')) brand = 'SeaOil';
-      else if (st.name.includes('Phoenix')) brand = 'Phoenix';
-      else if (st.name.includes('Unioil')) brand = 'Unioil';
-      
+
+      // Convert the station name to lowercase so 'Seaoil', 'SEAOIL', and 'SeaOil' all match perfectly
+      const nameLower = st.name.toLowerCase();
+
+      if (nameLower.includes('petron')) brand = 'Petron';
+      else if (nameLower.includes('shell')) brand = 'Shell';
+      else if (nameLower.includes('caltex')) brand = 'Caltex';
+      else if (nameLower.includes('cleanfuel')) brand = 'Cleanfuel';
+      else if (nameLower.includes('total')) brand = 'Total';
+      else if (nameLower.includes('flying v')) brand = 'Flying V';
+      else if (nameLower.includes('seaoil')) brand = 'SeaOil';
+      else if (nameLower.includes('phoenix')) brand = 'Phoenix';
+      else if (nameLower.includes('unioil')) brand = 'Unioil';
+
       stationsMap[st.id] = { ...st, brand: brand, prices: [] };
     }
     stationsMap[st.id].prices.push(item);
@@ -151,8 +155,8 @@ function App() {
   let groupedStations = Object.values(stationsMap);
   if (selectedBrand !== 'All') groupedStations = groupedStations.filter(s => s.brand === selectedBrand);
   if (searchQuery && searchQuery.trim() !== '') {
-    groupedStations = groupedStations.filter(s => 
-      s.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    groupedStations = groupedStations.filter(s =>
+      s.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       s.city.toLowerCase().includes(searchQuery.toLowerCase())
     );
   }
@@ -170,7 +174,7 @@ function App() {
     Total: ['Excellium 95', 'Premier 91', 'Standard Diesel', 'Excellium Diesel'],
     Phoenix: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
     Unioil: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
-    Default: ['Premium 95', 'Unleaded 91', 'Standard Diesel'] 
+    Default: ['Premium 95', 'Unleaded 91', 'Standard Diesel']
   };
   const availableFuels = fuelDictionary[stationBrand] || fuelDictionary.Default;
 
@@ -184,7 +188,7 @@ function App() {
   // --- UI RENDERING ---
   return (
     <div className="min-h-screen bg-gray-100 font-sans pb-10">
-      
+
       <header className="bg-blue-800 text-white p-4 shadow-md sticky top-0 z-20">
         <h1 className="text-xl font-bold">Benguet Gas Monitor</h1>
         <p className="text-xs text-blue-200">Community-Driven Pump Prices</p>
@@ -195,9 +199,8 @@ function App() {
         <div className="flex gap-2">
           {brands.map(brand => (
             <button key={brand} onClick={() => { setSelectedBrand(brand); setExpandedStationId(null); }}
-              className={`px-4 py-1.5 rounded-full text-sm font-bold border transition-colors ${
-                selectedBrand === brand ? 'bg-blue-800 text-white border-blue-800' : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-200'
-              }`}>
+              className={`px-4 py-1.5 rounded-full text-sm font-bold border transition-colors ${selectedBrand === brand ? 'bg-blue-800 text-white border-blue-800' : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-200'
+                }`}>
               {brand}
             </button>
           ))}
@@ -217,7 +220,7 @@ function App() {
       </div>
 
       <main className="max-w-md mx-auto mt-4 px-4">
-        
+
         {dbError && (
           <div className="bg-red-50 border border-red-200 p-4 rounded-lg mt-4 mb-4 text-center shadow-sm">
             <h2 className="text-red-800 font-bold text-sm">Connection Error</h2>
@@ -315,7 +318,7 @@ function App() {
                 <option value="" disabled hidden>Select Fuel</option>
                 {availableFuels.map(f => <option key={f} value={f}>{f}</option>)}
               </select>
-              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)}/>
+              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)} />
             </div>
             <button type="submit" className="bg-blue-800 text-white font-bold py-2 rounded mt-2 hover:bg-blue-900">Submit Addition</button>
           </form>
