@@ -149,6 +149,8 @@ function App() {
     const st = item.stations;
     if (!stationsMap[st.id]) {
       let brand = 'Independent';
+      
+      // Update: Added Phoenix and Unioil to the recognition logic
       if (st.name.includes('Petron')) brand = 'Petron';
       else if (st.name.includes('Shell')) brand = 'Shell';
       else if (st.name.includes('Caltex')) brand = 'Caltex';
@@ -156,12 +158,13 @@ function App() {
       else if (st.name.includes('Total')) brand = 'Total';
       else if (st.name.includes('Flying V')) brand = 'Flying V';
       else if (st.name.includes('SeaOil')) brand = 'SeaOil';
+      else if (st.name.includes('Phoenix')) brand = 'Phoenix';
+      else if (st.name.includes('Unioil')) brand = 'Unioil';
+      
       stationsMap[st.id] = { ...st, brand: brand, prices: [] };
     }
     stationsMap[st.id].prices.push(item);
   });
-
-  let groupedStations = Object.values(stationsMap);
   
   // 1. Filter by Brand (if not 'All')
   if (selectedBrand !== 'All') {
