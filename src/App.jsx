@@ -1,16 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 
-// Anti-Spam: Generate a permanent anonymous fingerprint for this device
-function getDeviceId() {
-  let deviceId = localStorage.getItem('gas_monitor_device_id');
-  if (!deviceId) {
-    deviceId = 'device_' + Math.random().toString(36).substr(2, 9);
-    localStorage.setItem('gas_monitor_device_id', deviceId);
-  }
-  return deviceId;
-}
-
 function App() {
   const [rawPrices, setRawPrices] = useState([]);
   const [selectedBrand, setSelectedBrand] = useState('All');
@@ -20,8 +10,6 @@ function App() {
   const [cityName, setCityName] = useState('Baguio City');
   const [fuelType, setFuelType] = useState('');
   const [price, setPrice] = useState('');
-  const [stationBrand, setStationBrand] = useState('Petron');
-  const [branchName, setBranchName] = useState(''); // Just the branch, e.g., 'Loakan Road'
 
   useEffect(() => {
     fetchPrices();
@@ -30,30 +18,32 @@ function App() {
   async function fetchPrices() {
     const { data, error } = await supabase
       .from('prices')
-      .select('*, stations!inner(id, name, status, city)') // Use !inner to filter the parent table
+      .select('*, stations!inner(id, name, status, city)')
       .neq('status', 'Archived')
-      .neq('status', 'Pending_Admin') // Hide admin-quarantined prices
-      .neq('stations.status', 'Pending_Admin'); // Hide admin-quarantined stations
+      .neq('status', 'Pending_Admin')
+      .neq('stations.status', 'Pending_Admin');
       
     if (!error) setRawPrices(data);
   }
 
-  // Upgraded: Auto-Archive old prices when a new one gets Verified
+  // Anti-Spam: Generate Fingerprint
+  function getDeviceId() {
+    let deviceId = localStorage.getItem('gas_monitor_device_id');
+    if (!deviceId) {
+      deviceId = 'device_' + Math.random().toString(36).substr(2, 9);
+      localStorage.setItem('gas_monitor_device_id', deviceId);
+    }
+    return deviceId;
+  }
+
   async function handleUpvotePrice(priceId, currentUpvotes, stationId, fuelType) {
     const deviceId = getDeviceId();
-
-    // 1. Try to log the vote in the anti-spam table first
-    const { error: logError } = await supabase
-      .from('user_votes')
-      .insert([{ price_id: priceId, device_id: deviceId, vote_type: 'upvote' }]);
-
-    // 2. If it fails (because of the UNIQUE constraint), the user already voted!
+    const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'upvote' }]);
     if (logError && logError.code === '23505') {
       alert("Anti-Spam: You have already verified this price!");
-      return; // Stop the function here
+      return; 
     }
 
-    // 3. If it succeeded, apply the math and archiving logic as normal
     const newUpvoteCount = currentUpvotes + 1;
     const isNowVerified = newUpvoteCount >= 3;
 
@@ -66,7 +56,6 @@ function App() {
     fetchPrices();
   }
 
-  // Upgraded: Super Admin bypass now also auto-archives the old price
   async function handleProposePrice(stationId, fuelName) {
     const rawInput = prompt(`What is the new price for ${fuelName}?`);
     if (!rawInput) return;
@@ -75,25 +64,14 @@ function App() {
     const newPrice = parseFloat(rawInput.replace('*', ''));
     
     if (!isNaN(newPrice) && newPrice > 30 && newPrice < 250) {
-      
       if (isSuperAdmin) {
-        // If Super Admin, instantly archive the old price first
-        await supabase
-          .from('prices')
-          .update({ status: 'Archived' })
-          .eq('station_id', stationId)
-          .eq('fuel_type', fuelName)
-          .eq('status', 'Verified');
+        await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelName).eq('status', 'Verified');
       }
-
       await supabase.from('prices').insert([{
-        station_id: stationId,
-        fuel_type: fuelName,
-        price: newPrice,
+        station_id: stationId, fuel_type: fuelName, price: newPrice,
         status: isSuperAdmin ? 'Verified' : 'Unverified',
         upvotes: isSuperAdmin ? 3 : 0
       }]);
-      
       fetchPrices();
       alert(isSuperAdmin ? "Super Admin: Price instantly verified!" : "Thanks! Your price update is now pending community verification.");
     } else {
@@ -101,21 +79,13 @@ function App() {
     }
   }
 
-  // Out of Stock Logic
   async function handleOutOfStock(priceId, currentVotes) {
     const deviceId = getDeviceId();
-
-    // 1. Check if they already reported this
-    const { error: logError } = await supabase
-      .from('user_votes')
-      .insert([{ price_id: priceId, device_id: deviceId, vote_type: 'out_of_stock' }]);
-
+    const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'out_of_stock' }]);
     if (logError && logError.code === '23505') {
       alert("Anti-Spam: You have already reported this as Out of Stock!");
       return; 
     }
-
-    // 2. Apply the vote
     const votes = currentVotes ? currentVotes : 0;
     await supabase.from('prices').update({ out_of_stock_votes: votes + 1 }).eq('id', priceId);
     fetchPrices();
@@ -126,43 +96,18 @@ function App() {
     e.preventDefault();
     const fullStationName = `${stationBrand} - ${branchName}`;
 
-    // 1. CHECK IF THE STATION ALREADY EXISTS IN THE DATABASE
-    const { data: existingStation } = await supabase
-      .from('stations')
-      .select('id, status')
-      .ilike('name', fullStationName) // Case-insensitive check
-      .limit(1);
+    const { data: existingStation } = await supabase.from('stations').select('id, status').ilike('name', fullStationName).limit(1);
 
     if (existingStation && existingStation.length > 0) {
-      // SCENARIO A: The station exists! Just add the new price to it.
-      await supabase.from('prices').insert([{ 
-        station_id: existingStation[0].id, 
-        fuel_type: fuelType, 
-        price: parseFloat(price), 
-        status: 'Unverified' // Wait for 3 community upvotes
-      }]);
+      await supabase.from('prices').insert([{ station_id: existingStation[0].id, fuel_type: fuelType, price: parseFloat(price), status: 'Unverified' }]);
       alert(`Success! We found ${fullStationName} in our database. Your price is now pending community verification.`);
-      
     } else {
-      // SCENARIO B: Brand new station! Send to Admin Quarantine.
-      const { data: newStation } = await supabase.from('stations').insert([{ 
-        name: fullStationName, 
-        city: cityName, 
-        status: 'Pending_Admin' // Hides it from the public app
-      }]).select();
-
+      const { data: newStation } = await supabase.from('stations').insert([{ name: fullStationName, city: cityName, status: 'Pending_Admin' }]).select();
       if (newStation && newStation.length > 0) {
-        await supabase.from('prices').insert([{ 
-          station_id: newStation[0].id, 
-          fuel_type: fuelType, 
-          price: parseFloat(price), 
-          status: 'Pending_Admin' 
-        }]);
+        await supabase.from('prices').insert([{ station_id: newStation[0].id, fuel_type: fuelType, price: parseFloat(price), status: 'Pending_Admin' }]);
         alert(`Thank you! ${fullStationName} is a new station. An administrator will review and approve it shortly to prevent spam.`);
       }
     }
-
-    // Clear the form and refresh
     setBranchName(''); setPrice(''); setFuelType(''); fetchPrices();
   }
 
@@ -176,6 +121,8 @@ function App() {
       else if (st.name.includes('Caltex')) brand = 'Caltex';
       else if (st.name.includes('Cleanfuel')) brand = 'Cleanfuel';
       else if (st.name.includes('Total')) brand = 'Total';
+      else if (st.name.includes('Flying V')) brand = 'Flying V';
+      else if (st.name.includes('SeaOil')) brand = 'SeaOil';
       stationsMap[st.id] = { ...st, brand: brand, prices: [] };
     }
     stationsMap[st.id].prices.push(item);
@@ -185,9 +132,8 @@ function App() {
   if (selectedBrand !== 'All') groupedStations = groupedStations.filter(s => s.brand === selectedBrand);
   groupedStations.sort((a, b) => a.name.localeCompare(b.name));
 
-  const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Total', 'Independent'];
+  const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Independent'];
 
-  // Smart Dropdown Dictionary (Now including Flying V, SeaOil, and Total)
   const fuelDictionary = {
     Petron: ['Blaze 100', 'XCS 95', 'Xtra Advance 93', 'Super Xtra 91', 'Turbo Diesel', 'Diesel Max', 'Gaas (Kerosene)'],
     Shell: ['V-Power Racing 98', 'V-Power Gasoline 95', 'FuelSave Unleaded 91', 'V-Power Diesel', 'Standard Diesel', 'Kerosene'],
@@ -199,7 +145,9 @@ function App() {
     Default: ['Premium 95', 'Unleaded 91', 'Standard Diesel'] 
   };
 
-  // Auto-detect which fuels to show based on the brand dropdown selection
+  const [stationBrand, setStationBrand] = useState('Petron');
+  const [branchName, setBranchName] = useState('');
+
   let availableFuels = fuelDictionary.Default;
   if (stationBrand === 'Petron') availableFuels = fuelDictionary.Petron;
   else if (stationBrand === 'Shell') availableFuels = fuelDictionary.Shell;
@@ -209,20 +157,32 @@ function App() {
   else if (stationBrand === 'SeaOil') availableFuels = fuelDictionary.SeaOil;
   else if (stationBrand === 'Total') availableFuels = fuelDictionary.Total;
 
+  // UX UPGRADE: Calculate the most recent database activity
+  let latestUpdate = 'Loading...';
+  if (rawPrices.length > 0) {
+    const dates = rawPrices.map(p => new Date(p.last_updated || Date.now()).getTime());
+    const maxDate = new Date(Math.max(...dates));
+    latestUpdate = maxDate.toLocaleString('en-PH', { 
+      weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' 
+    });
+  }
+
   return (
     <div className="min-h-screen bg-gray-100 font-sans pb-10">
-
+      
+      {/* UI UPGRADE: Changed "Real-time" to "Community-Driven" */}
       <header className="bg-blue-800 text-white p-4 shadow-md sticky top-0 z-20">
         <h1 className="text-xl font-bold">Benguet Gas Monitor</h1>
-        <p className="text-xs text-blue-200">Real-time pump prices</p>
+        <p className="text-xs text-blue-200">Community-Driven Pump Prices</p>
       </header>
 
       <div className="bg-white shadow-sm border-b border-gray-200 p-3 overflow-x-auto whitespace-nowrap sticky top-[60px] z-10">
         <div className="flex gap-2">
           {brands.map(brand => (
             <button key={brand} onClick={() => { setSelectedBrand(brand); setExpandedStationId(null); }}
-              className={`px-4 py-1.5 rounded-full text-sm font-bold border transition-colors ${selectedBrand === brand ? 'bg-blue-800 text-white border-blue-800' : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-200'
-                }`}>
+              className={`px-4 py-1.5 rounded-full text-sm font-bold border transition-colors ${
+                selectedBrand === brand ? 'bg-blue-800 text-white border-blue-800' : 'bg-gray-50 text-gray-600 border-gray-300 hover:bg-gray-200'
+              }`}>
               {brand}
             </button>
           ))}
@@ -230,10 +190,28 @@ function App() {
       </div>
 
       <main className="max-w-md mx-auto mt-4 px-4">
+
+        {/* NEW UX UPGRADE: The Info & Disclaimer Banner */}
+        <div className="bg-blue-50 border border-blue-200 p-4 rounded-lg mb-5 shadow-sm">
+          <h2 className="text-blue-800 font-bold text-sm mb-1 flex items-center gap-1">
+            <span>ℹ️</span> About This Data
+          </h2>
+          <p className="text-blue-900 text-xs leading-relaxed mb-3">
+            Baseline prices are synced weekly with <strong>Department of Energy (DOE)</strong> advisories. 
+            Because actual pump prices vary by region due to logistics costs, this platform relies on 
+            <strong> local crowdsourcing</strong>. Help fellow drivers by verifying or updating prices when you fuel up!
+          </p>
+          <div className="bg-white/70 rounded px-2 py-1.5 border border-blue-100 inline-block">
+            <p className="text-[10px] text-blue-800 font-bold uppercase tracking-wider">
+              Last Database Update: <span className="text-blue-600 ml-1">{latestUpdate}</span>
+            </p>
+          </div>
+        </div>
+
         <div className="flex flex-col gap-3">
           {groupedStations.map(station => (
             <div key={station.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-
+              
               <div onClick={() => setExpandedStationId(expandedStationId === station.id ? null : station.id)} className="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50">
                 <div>
                   <h3 className="font-bold text-gray-800 text-md">{station.name}</h3>
@@ -246,7 +224,7 @@ function App() {
                 <div className="bg-gray-50 border-t border-gray-200 p-4 flex flex-col gap-3">
                   {station.prices.sort((a, b) => a.price - b.price).map(fuel => (
                     <div key={fuel.id} className="flex flex-col bg-white p-3 rounded border border-gray-200 shadow-sm">
-
+                      
                       <div className="flex justify-between items-start">
                         <div>
                           <p className="font-bold text-blue-800 text-sm flex items-center gap-2">
@@ -257,7 +235,7 @@ function App() {
                           </p>
                           <p className="text-xs text-gray-500 mt-1">{fuel.upvotes} Upvotes</p>
                         </div>
-
+                        
                         <div className="text-right">
                           {fuel.out_of_stock_votes >= 3 ? (
                             <p className="text-xl font-black text-red-600 line-through">OUT OF STOCK</p>
@@ -268,9 +246,13 @@ function App() {
                       </div>
 
                       <div className="flex justify-between mt-3 pt-2 border-t border-gray-100">
-                        <button onClick={(e) => {e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
+                        <button onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
                         <button onClick={(e) => { e.stopPropagation(); handleProposePrice(station.id, fuel.fuel_type); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
-                        <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 text-xs font-bold px-2 py-1 hover:bg-gray-100 hover:text-red-600 rounded transition-colors">🚩 Report Empty</button>
+                        
+                        {/* UI UPGRADE: Made the Report Empty button less confusing */}
+                        <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">
+                          🚩 Report Empty
+                        </button>
                       </div>
 
                     </div>
@@ -281,56 +263,26 @@ function App() {
           ))}
         </div>
 
-        {/* The Upgraded Add Station Form with Brand Dropdown */}
+        {/* Add Station Form */}
         <div className="mt-8 bg-white p-4 rounded-lg shadow-sm border border-gray-300">
           <h2 className="text-md font-bold text-gray-800 mb-3">Missing a Station?</h2>
           <form onSubmit={handleAddStation} className="flex flex-col gap-2">
-
-            {/* NEW: Brand Selection Dropdown */}
             <div className="flex gap-2">
-              <select
-                className="border p-2 rounded text-sm w-1/3 bg-gray-50 font-bold text-blue-800"
-                value={stationBrand}
-                onChange={(e) => {
-                  setStationBrand(e.target.value);
-                  setFuelType(''); // Reset the fuel type when they change brands
-                }}
-              >
-                <option value="Petron">Petron</option>
-                <option value="Shell">Shell</option>
-                <option value="Caltex">Caltex</option>
-                <option value="Cleanfuel">Cleanfuel</option>
-                <option value="Flying V">Flying V</option>
-                <option value="SeaOil">SeaOil</option>
-                <option value="Total">Total</option>
-                <option value="Independent">Independent (Eco Fill, etc.)</option>
+              <select className="border p-2 rounded text-sm w-1/3 bg-gray-50 font-bold text-blue-800" value={stationBrand} onChange={(e) => { setStationBrand(e.target.value); setFuelType(''); }}>
+                <option value="Petron">Petron</option><option value="Shell">Shell</option><option value="Caltex">Caltex</option><option value="Cleanfuel">Cleanfuel</option><option value="Flying V">Flying V</option><option value="SeaOil">SeaOil</option><option value="Total">Total</option><option value="Independent">Independent</option>
               </select>
-
-              {/* The Station Branch Name */}
-              <input
-                type="text" placeholder="Branch (e.g. Loakan Road)" required
-                className="border p-2 rounded text-sm w-2/3 bg-gray-50"
-                value={branchName}
-                onChange={(e) => setBranchName(e.target.value)}
-              />
+              <input type="text" placeholder="Branch (e.g. Loakan Road)" required className="border p-2 rounded text-sm w-2/3 bg-gray-50" value={branchName} onChange={(e) => setBranchName(e.target.value)} />
             </div>
-
             <select className="border p-2 rounded text-sm bg-gray-50" value={cityName} onChange={(e) => setCityName(e.target.value)}>
               <option>Baguio City</option><option>La Trinidad</option><option>Tuba</option>
             </select>
-
             <div className="flex gap-2">
-              {/* The Fuel Dropdown - Now strictly controlled by the Brand dropdown! */}
               <select required className="border p-2 rounded text-sm w-1/2 bg-gray-50 text-gray-700" value={fuelType} onChange={(e) => setFuelType(e.target.value)}>
                 <option value="" disabled hidden>Select Fuel</option>
-                {fuelDictionary[stationBrand === 'Independent' ? 'Default' : stationBrand]?.map(f => (
-                  <option key={f} value={f}>{f}</option>
-                ))}
+                {availableFuels.map(f => <option key={f} value={f}>{f}</option>)}
               </select>
-
-              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)} />
+              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)}/>
             </div>
-
             <button type="submit" className="bg-blue-800 text-white font-bold py-2 rounded mt-2 hover:bg-blue-900">Submit Station</button>
           </form>
         </div>
