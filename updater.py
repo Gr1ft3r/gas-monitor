@@ -10,18 +10,58 @@ key = os.environ.get("VITE_SUPABASE_ANON_KEY")
 headers = { "apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json", "Prefer": "return=representation" }
 
 def scrape_doe_advisory():
-    print("Scraping latest news for DOE fuel advisories...")
-    # In a production environment, you would scrape a reliable news RSS feed or the DOE press page.
-    # For this script, we will simulate the extraction of data from a news headline:
-    # "DOE Advisory: Gasoline up by P1.20, Diesel up by P0.50, Kerosene down by P0.20"
+    print("Fetching real-time news for DOE fuel advisories...")
     
-    # Simulated extraction (you would use regex on the BeautifulSoup text here)
-    scraped_data = {
-        "gasoline_change": 1.20,  # Positive means increase
-        "diesel_change": 0.50,
-        "kerosene_change": -0.20  # Negative means rollback
-    }
-    return scraped_data
+    # Target Google News RSS for PH oil price updates from the last 3 days
+    url = "https://news.google.com/rss/search?q=oil+price+update+philippines+gasoline+diesel+when:3d"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    scraped_data = {"gasoline_change": 0.0, "diesel_change": 0.0, "kerosene_change": 0.0}
+    
+    try:
+        response = requests.get(url, headers=headers)
+        # Parse the RSS XML feed using BeautifulSoup
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Combine the titles and descriptions of the top 3 news articles into one big text block
+        items = soup.find_all('item')[:3]
+        if not items:
+            print("No recent fuel news found this week. Skipping update.")
+            return scraped_data
+            
+        news_text = " ".join([item.title.text + " " + item.description.text for item in items]).lower()
+        print(f"Analyzing news headlines: {news_text[:150]}...")
+
+        # Define keywords that indicate whether the price is going up or down
+        decrease_words = ['rollback', 'decrease', 'down', 'cut', 'slash', 'lower']
+        
+        def extract_price(fuel_name, text):
+            # Regex 1: Looks for "gasoline hike of P1.20"
+            pattern1 = rf"{fuel_name}.{{0,40}}?(?:rollback|hike|increase|decrease|down|up|cut|slash).*?(?:php|p|₱)?\s*(\d+\.\d+)"
+            # Regex 2: Looks for "P1.20 hike in gasoline"
+            pattern2 = rf"(?:php|p|₱)?\s*(\d+\.\d+).{{0,40}}?(?:rollback|hike|increase|decrease|down|up|cut|slash).{{0,40}}?{fuel_name}"
+            
+            match = re.search(pattern1, text) or re.search(pattern2, text)
+            
+            if match:
+                amount = float(match.group(1))
+                # Check the surrounding 40 characters to see if it mentions a rollback/cut
+                context = text[max(0, match.start()-40) : min(len(text), match.end()+40)]
+                is_decrease = any(w in context for w in decrease_words)
+                
+                return -amount if is_decrease else amount
+            return 0.0
+
+        scraped_data["gasoline_change"] = extract_price("gasoline", news_text) or extract_price("gas", news_text)
+        scraped_data["diesel_change"] = extract_price("diesel", news_text)
+        scraped_data["kerosene_change"] = extract_price("kerosene", news_text)
+        
+        print(f"Extracted mathematical adjustments: {scraped_data}")
+        return scraped_data
+        
+    except Exception as e:
+        print(f"Web scraping failed: {e}")
+        return scraped_data
 
 def apply_doe_updates(scraped_data):
     # 1. Fetch all currently Verified prices
