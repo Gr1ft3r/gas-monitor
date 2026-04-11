@@ -56,8 +56,12 @@ function App() {
 
     const newUpvoteCount = currentUpvotes + 1;
     if (newUpvoteCount >= 3) {
+      // 1. Archive any older duplicate prices
       await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelType).eq('status', 'Verified');
+      // 2. Verify the new price
       await supabase.from('prices').update({ upvotes: newUpvoteCount, status: 'Verified' }).eq('id', priceId);
+      // 3. NEW: Verify the station itself so it drops the Unverified tag
+      await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId);
     } else {
       await supabase.from('prices').update({ upvotes: newUpvoteCount }).eq('id', priceId);
     }
@@ -126,18 +130,71 @@ function App() {
   async function handleAddStation(e) {
     e.preventDefault();
     const fullStationName = `${stationBrand} - ${branchName}`;
-    const { data: existingStation } = await supabase.from('stations').select('id, status').ilike('name', fullStationName).limit(1);
+    const newPrice = parseFloat(price);
+    
+    if (isNaN(newPrice) || newPrice < 30 || newPrice > 250) {
+      alert("❌ Blocked: Please enter a realistic fuel price.");
+      return;
+    }
+
+    // 1. Check if the station already exists
+    const { data: existingStation } = await supabase.from('stations')
+      .select('id, status')
+      .ilike('name', fullStationName)
+      .limit(1);
 
     if (existingStation && existingStation.length > 0) {
-      await supabase.from('prices').insert([{ station_id: existingStation[0].id, fuel_type: fuelType, price: parseFloat(price), status: 'Unverified' }]);
-      alert(`Success! Price added to existing station pending verification.`);
+      const stationId = existingStation[0].id;
+      
+      // 2. Check if this specific fuel type already exists at this station
+      const { data: existingFuel } = await supabase.from('prices')
+        .select('id, price')
+        .eq('station_id', stationId)
+        .eq('fuel_type', fuelType)
+        .neq('status', 'Archived')
+        .limit(1);
+        
+      if (existingFuel && existingFuel.length > 0) {
+        // If it exists, archive the old one and save the old_price!
+        await supabase.from('prices').update({ status: 'Archived' }).eq('id', existingFuel[0].id);
+        await supabase.from('prices').insert([{ 
+          station_id: stationId, 
+          fuel_type: fuelType, 
+          price: newPrice, 
+          old_price: existingFuel[0].price,
+          status: 'Unverified',
+          upvotes: 1
+        }]);
+        alert(`Success! Updated existing ${fuelType} at ${fullStationName}. Awaiting community verification.`);
+      } else {
+        // If the station exists but the fuel is new
+        await supabase.from('prices').insert([{ 
+          station_id: stationId, 
+          fuel_type: fuelType, 
+          price: newPrice, 
+          status: 'Unverified',
+          upvotes: 1
+        }]);
+        alert(`Success! Added new ${fuelType} to ${fullStationName}. Awaiting verification.`);
+      }
     } else {
-      const { data: newStation } = await supabase.from('stations').insert([{ name: fullStationName, city: cityName, status: 'Pending_Admin' }]).select();
+      // 3. If it's a completely brand new station
+      const { data: newStation } = await supabase.from('stations').insert([{ 
+        name: fullStationName, city: cityName, status: 'Unverified' 
+      }]).select();
+      
       if (newStation && newStation.length > 0) {
-        await supabase.from('prices').insert([{ station_id: newStation[0].id, fuel_type: fuelType, price: parseFloat(price), status: 'Pending_Admin' }]);
-        alert(`Thank you! Station submitted for admin approval.`);
+        await supabase.from('prices').insert([{ 
+          station_id: newStation[0].id, 
+          fuel_type: fuelType, 
+          price: newPrice, 
+          status: 'Unverified',
+          upvotes: 1 // The creator gets the first vote automatically!
+        }]);
+        alert(`Thank you! ${fullStationName} has been added to the map as an Unverified Location. It will be fully verified once 2 more drivers confirm it.`);
       }
     }
+    
     setBranchName(''); setPrice(''); setFuelType(''); fetchPrices();
   }
 
@@ -270,7 +327,14 @@ function App() {
                   <div key={station.id} className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
                     <div onClick={() => setExpandedStationId(expandedStationId === station.id ? null : station.id)} className="p-4 flex justify-between items-center cursor-pointer hover:bg-gray-50">
                       <div>
-                        <h3 className="font-bold text-gray-800 text-md">{station.name}</h3>
+                        <h3 className="font-bold text-gray-800 text-md flex items-center flex-wrap gap-2">
+                          {station.name}
+                          {station.status === 'Unverified' && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-200 uppercase tracking-wider font-bold">
+                              ⚠️ Unverified Location
+                            </span>
+                          )}
+                        </h3>
                         <p className="text-xs text-gray-400 font-medium mt-1">{station.prices.length} Fuel Types</p>
                       </div>
                       <div className="text-blue-600 font-bold text-xl">{expandedStationId === station.id ? '−' : '+'}</div>
@@ -325,7 +389,9 @@ function App() {
 
         <div className="mt-8 bg-white p-4 rounded-lg shadow-sm border border-gray-300">
           <h2 className="text-md font-bold text-gray-800 mb-1">Missing a Station or Fuel?</h2>
-          <p className="text-xs text-gray-500 mb-3">Add it below to help the community.</p>
+          <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+            Help keep your community moving. Submit missing data below—it will be published once 3 local drivers verify it.
+          </p>
           <form onSubmit={handleAddStation} className="flex flex-col gap-2">
             <div className="flex gap-2">
               <select className="border p-2 rounded text-sm w-1/3 bg-gray-50 font-bold text-blue-800" value={stationBrand} onChange={(e) => { setStationBrand(e.target.value); setFuelType(''); }}>
@@ -367,8 +433,9 @@ function App() {
                     value={newPriceInput}
                     onChange={(e) => setNewPriceInput(e.target.value)}
                   />
-                  <p className="text-[10px] text-gray-500 mt-2 italic text-center">
-                    🔒 Updates are anonymous and rely on local driver verification.
+                  <p className="text-[10px] text-gray-500 mt-2 italic text-center leading-tight">
+                    <span className="not-italic mr-1">📍</span>
+                    Help keep your community moving. Your anonymous update goes live once 3 local drivers verify it.
                   </p>
                 </div>
 
