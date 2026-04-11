@@ -8,6 +8,8 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedStationId, setExpandedStationId] = useState(null);
   const [dbError, setDbError] = useState(null);
+  const [updateModal, setUpdateModal] = useState({ isOpen: false, priceId: null, currentPrice: '', stationId: null, stationName: '', fuelName: '' });
+  const [newPriceInput, setNewPriceInput] = useState('');
 
   // Form State
   const [stationBrand, setStationBrand] = useState('Petron');
@@ -62,21 +64,33 @@ function App() {
     fetchPrices();
   }
 
-  async function handleProposePrice(stationId, fuelName) {
-    const rawInput = prompt(`What is the new price for ${fuelName}?`);
+  async function submitPriceUpdate(e) {
+    e.preventDefault();
+    const { priceId, currentPrice, stationId, fuelName } = updateModal;
+    const rawInput = newPriceInput.trim();
     if (!rawInput) return;
 
     const isSuperAdmin = rawInput.endsWith('*');
     const newPrice = parseFloat(rawInput.replace('*', ''));
 
     if (!isNaN(newPrice) && newPrice > 30 && newPrice < 250) {
-      if (isSuperAdmin) await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelName).eq('status', 'Verified');
+      // 1. Archive the old duplicate price so it disappears from the UI
+      await supabase.from('prices').update({ status: 'Archived' }).eq('id', priceId);
+
+      // 2. Insert the new price, but save the currentPrice into the old_price column
       await supabase.from('prices').insert([{
-        station_id: stationId, fuel_type: fuelName, price: newPrice,
-        status: isSuperAdmin ? 'Verified' : 'Unverified', upvotes: isSuperAdmin ? 3 : 0
+        station_id: stationId,
+        fuel_type: fuelName,
+        price: newPrice,
+        old_price: currentPrice,
+        status: isSuperAdmin ? 'Verified' : 'Unverified',
+        upvotes: isSuperAdmin ? 3 : 1 // The person proposing it counts as the first vote!
       }]);
+
       fetchPrices();
-      alert(isSuperAdmin ? "Super Admin: Price instantly verified!" : "Thanks! Your price update is now pending community verification.");
+      setUpdateModal({ isOpen: false });
+      setNewPriceInput('');
+      alert(isSuperAdmin ? "Super Admin: Price instantly verified!" : "Update submitted! Awaiting community verification.");
     } else {
       alert("❌ Blocked: Please enter a realistic fuel price.");
     }
@@ -278,13 +292,20 @@ function App() {
                                 {fuel.out_of_stock_votes >= 3 ? (
                                   <p className="text-xl font-black text-red-600 line-through">OUT OF STOCK</p>
                                 ) : (
-                                  <p className="text-xl font-black text-gray-900">₱{fuel.price.toFixed(2)}</p>
+                                  <div className="flex flex-col items-end">
+                                    <p className="text-xl font-black text-gray-900">₱{fuel.price.toFixed(2)}</p>
+                                    {fuel.old_price && (
+                                      <p className="text-[10px] text-gray-400 font-medium line-through mt-0.5">
+                                        Was ₱{fuel.old_price.toFixed(2)}
+                                      </p>
+                                    )}
+                                  </div>
                                 )}
                               </div>
                             </div>
                             <div className="flex justify-between mt-3 pt-2 border-t border-gray-100">
                               <button onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
-                              <button onClick={(e) => { e.stopPropagation(); handleProposePrice(station.id, fuel.fuel_type); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
+                              <button onClick={(e) => { e.stopPropagation(); setUpdateModal({ isOpen: true, priceId: fuel.id, currentPrice: fuel.price, stationId: station.id, stationName: station.name, fuelName: fuel.fuel_type }); setNewPriceInput(''); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
                               <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🚩 Empty</button>
                               <button onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }} className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🗑️ Not Sold</button>
                             </div>
@@ -325,6 +346,40 @@ function App() {
             <button type="submit" className="bg-blue-800 text-white font-bold py-2 rounded mt-2 hover:bg-blue-900">Submit Addition</button>
           </form>
         </div>
+        {/* NEW UX UPGRADE: The Custom Update Modal */}
+        {updateModal.isOpen && (
+          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white rounded-xl shadow-lg w-full max-w-sm p-5 border border-gray-200">
+              <h3 className="text-lg font-bold text-gray-800 mb-1">Update Price</h3>
+              <p className="text-sm text-gray-600 mb-4">
+                {updateModal.stationName} - <span className="font-bold text-blue-700">{updateModal.fuelName}</span>
+              </p>
+
+              <form onSubmit={submitPriceUpdate} className="flex flex-col gap-3">
+                <div>
+                  <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">New Price (₱)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    autoFocus
+                    required
+                    className="w-full mt-1 border border-gray-300 p-3 rounded-lg text-lg font-black text-gray-900 bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                    value={newPriceInput}
+                    onChange={(e) => setNewPriceInput(e.target.value)}
+                  />
+                  <p className="text-[10px] text-gray-500 mt-2 italic text-center">
+                    🔒 Updates are anonymous and rely on local driver verification.
+                  </p>
+                </div>
+
+                <div className="flex gap-2 mt-2">
+                  <button type="button" onClick={() => setUpdateModal({ isOpen: false })} className="flex-1 py-2.5 rounded-lg font-bold text-gray-600 bg-gray-100 hover:bg-gray-200 transition-colors">Cancel</button>
+                  <button type="submit" className="flex-1 py-2.5 rounded-lg font-bold text-white bg-blue-600 hover:bg-blue-700 transition-colors">Submit Update</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
