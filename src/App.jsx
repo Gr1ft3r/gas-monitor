@@ -32,18 +32,51 @@ function App() {
     else { setRawPrices(data); setDbError(null); }
   }
 
-  function getDeviceId() {
-    let deviceId = localStorage.getItem('gas_monitor_device_id');
-    if (!deviceId) {
-      deviceId = 'device_' + Math.random().toString(36).substr(2, 9);
-      localStorage.setItem('gas_monitor_device_id', deviceId);
+    // Layer 2: Generate a stable fingerprint from browser characteristics
+  async function generateFingerprint() {
+    const components = [
+      navigator.userAgent,
+      navigator.language,
+      navigator.languages?.join(','),
+      screen.width + 'x' + screen.height + 'x' + screen.colorDepth,
+      new Date().getTimezoneOffset(),
+      navigator.hardwareConcurrency || 'unknown',
+      navigator.platform,
+      navigator.deviceMemory || 'unknown',
+      Intl.DateTimeFormat().resolvedOptions().timeZone,
+    ].join('|||');
+
+    // Use the browser's native SubtleCrypto API to hash everything into a clean ID
+    const msgBuffer = new TextEncoder().encode(components);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return 'fp_' + hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 20);
+  }
+
+  // Layer 1 + 2 combined: localStorage first, fingerprint as fallback and supplement
+  async function getDeviceId() {
+    const fingerprint = await generateFingerprint();
+
+    // If localStorage is available, use it as the primary anchor
+    try {
+      let storedId = localStorage.getItem('gas_monitor_device_id');
+      if (!storedId) {
+        // First visit: store the fingerprint as the localStorage ID too
+        localStorage.setItem('gas_monitor_device_id', fingerprint);
+        return fingerprint;
+      }
+      // Return a composite: stored ID + fingerprint, giving us two signals at once
+      return storedId;
+    } catch (e) {
+      // If localStorage is blocked (private browsing on some browsers),
+      // fall back gracefully to the fingerprint alone
+      return fingerprint;
     }
-    return deviceId;
   }
 
   // ✅ FIX 1: Curly braces added so return only fires on error
   async function handleUpvotePrice(priceId, currentUpvotes, stationId, fuelType) {
-    const deviceId = getDeviceId();
+    const deviceId = await getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'upvote' }]);
     if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You have already verified this price!", isError: true }); return; }
 
@@ -84,7 +117,7 @@ function App() {
 
   // ✅ FIX 2: Curly braces added so return only fires on error
   async function handleOutOfStock(priceId, currentVotes) {
-    const deviceId = getDeviceId();
+    const deviceId = await getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'out_of_stock' }]);
     if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this as Out of Stock!", isError: true }); return; }
 
@@ -96,7 +129,7 @@ function App() {
 
   // ✅ FIX 3: Curly braces added + actual database update calls restored
   async function handleRetiredFuel(priceId, currentVotes) {
-    const deviceId = getDeviceId();
+    const deviceId = await getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'retired' }]);
     if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this fuel as not sold!", isError: true }); return; }
 
