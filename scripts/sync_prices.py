@@ -4,28 +4,21 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-# --- CONFIGURATION ---
-# Read DRY_RUN from environment (set via GitHub Actions workflow_dispatch input)
-# "true" (string) = preview only, no DB writes. Anything else = live mode.
+# ---------------------------------------------------------------------------
+# CONFIGURATION
+# ---------------------------------------------------------------------------
+
 DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() == "true"
+DEBUG   = os.environ.get("DEBUG", "false").strip().lower() == "true"
 
 def _sanitize_url(raw):
-    """
-    Strips common copy-paste artifacts from a URL secret:
-      - Markdown link format: [https://x.supabase.co](https://x.supabase.co)
-      - Surrounding quotes, spaces, trailing slashes
-    Always returns a clean bare URL like: https://x.supabase.co
-    """
     if not raw:
         return raw
     raw = raw.strip().strip('"').strip("'")
-    # Remove markdown link syntax: [label](url) -> extract the url inside ()
     md_match = re.search(r"\(https?://[^)]+\)", raw)
     if md_match:
         raw = md_match.group(0).strip("()")
-    # Remove any remaining [ ] wrappers
     raw = re.sub(r"^\[|\]$", "", raw.strip())
-    # Remove trailing slash
     raw = raw.rstrip("/")
     return raw
 
@@ -36,11 +29,9 @@ SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
-    "Prefer": "return=representation"
+    "Prefer": "return=representation",
 }
 
-# Safety cap: rejects any extracted value above this (protects against bad regex matches).
-# Historical PH max is ~P25/L (April 2026 mega-rollback). 30 gives a safe margin.
 MAX_SAFE_ADJUSTMENT = 30.0
 
 # ---------------------------------------------------------------------------
@@ -89,6 +80,12 @@ def scrape_doe_advisory():
                 for i in relevant
             ])
             print(f"  Got {len(relevant)} relevant article(s) from {source['name']}")
+
+            # DEBUG: always print the cleaned text so we can see what the regex works on
+            clean_preview = BeautifulSoup(raw_news_text, "html.parser").get_text()
+            print(f"  --- CLEANED TEXT (first 500 chars) ---")
+            print(f"  {clean_preview[:500]}")
+            print(f"  --- END CLEANED TEXT ---")
             break
 
         except Exception as e:
@@ -103,7 +100,7 @@ def scrape_doe_advisory():
     result["diesel_change"]   = _extract_adjustment(["diesel"], raw_news_text)
     result["kerosene_change"] = _extract_adjustment(["kerosene", "gaas"], raw_news_text)
 
-    print(f"\\nExtracted adjustments: {result}")
+    print(f"\nExtracted adjustments: {result}")
     return result
 
 
@@ -111,7 +108,7 @@ def _extract_adjustment(fuel_keywords_list, raw_text):
     clean_text = BeautifulSoup(raw_text, "html.parser").get_text().lower()
 
     fuel_pattern = "|".join(fuel_keywords_list)
-    price_token  = r"(?:php|p|peso)?\\s*(\\d+\\.?\\d*)"
+    price_token  = r"(?:php|p|peso)?\s*(\d+\.?\d*)"
     action_token = r"(?:rollback|hike|increase|decrease|cut|drop|rise|down|up)"
     decrease_words = ["rollback", "decrease", "down", "cut", "slash", "lower", "drop", "reduce", "fell", "fall"]
     increase_words = ["hike", "increase", "up", "rise", "surge", "jump", "climb", "higher"]
@@ -123,7 +120,7 @@ def _extract_adjustment(fuel_keywords_list, raw_text):
         rf"{price_token}.{{0,30}}?{action_token}.{{0,40}}?(?:{fuel_pattern})",
         # Pattern 3: fuel -> down/up -> price  e.g. "diesel: down P1.50"
         rf"(?:{fuel_pattern}).{{0,20}}?(?:down|up).{{0,10}}?{price_token}",
-        # Pattern 4: action -> price -> fuel  e.g. "rollback of P3.41/liter for gasoline" (GMA style)
+        # Pattern 4: action -> price -> fuel  e.g. "rollback of P3.41 for gasoline" (GMA style)
         rf"{action_token}.{{0,20}}?{price_token}.{{0,20}}?(?:{fuel_pattern})",
     ]
 
@@ -142,12 +139,18 @@ def _extract_adjustment(fuel_keywords_list, raw_text):
                 is_decrease = any(w in context for w in decrease_words)
                 is_increase = any(w in context for w in increase_words)
                 if not is_decrease and not is_increase:
+                    print(f"  [Pattern {i}] Matched amount={amount} but direction unclear. Context: ...{context}...")
                     continue
                 signed = -amount if is_decrease else amount
                 print(f"  [Pattern {i}] Found {'+' if signed > 0 else ''}{signed:.2f} for [{fuel_pattern}]")
                 return signed
             except ValueError:
                 continue
+        else:
+            if DEBUG:
+                print(f"  [Pattern {i}] No match for [{fuel_pattern}]")
+
+    print(f"  No match found for [{fuel_pattern}]")
     return 0.0
 
 # ---------------------------------------------------------------------------
@@ -158,10 +161,10 @@ def apply_doe_updates(adjustments):
     prefix = "[DRY RUN] " if DRY_RUN else ""
 
     if all(v == 0.0 for v in adjustments.values()):
-        print(f"\\n{prefix}No adjustments to apply. Database unchanged.")
+        print(f"\n{prefix}No adjustments to apply. Database unchanged.")
         return
 
-    print(f"\\n[{datetime.now()}] {prefix}Fetching Verified prices from Supabase...")
+    print(f"\n[{datetime.now()}] {prefix}Fetching Verified prices from Supabase...")
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/prices?status=eq.Verified&select=id,fuel_type,price,station_id",
         headers=SUPABASE_HEADERS,
@@ -224,11 +227,11 @@ def apply_doe_updates(adjustments):
         else:
             print(f"  Insert failed for {item['fuel_type']}: {insert.text}")
 
-    print(f"\\nDone. {updated} updated, {skipped} skipped.")
+    print(f"\nDone. {updated} updated, {skipped} skipped.")
 
 
 def _dry_run_preview(verified, adjustments):
-    print("\\n" + "=" * 60)
+    print("\n" + "=" * 60)
     print("  DRY RUN PREVIEW — no database changes will be made")
     print("=" * 60)
     print(f"  Adjustments to apply:")
@@ -272,12 +275,12 @@ def _dry_run_preview(verified, adjustments):
             print(f"  {fuel_type:<25}  P{old:>8.2f}  P{new:>8.2f}  {d:>+7.2f}  {arrow}")
 
     if would_guard:
-        print(f"\\n  WOULD SKIP — price guard triggered ({len(would_guard)} rows):")
+        print(f"\n  WOULD SKIP — price guard triggered ({len(would_guard)} rows):")
         for fuel_type, old, new in would_guard:
             print(f"    {fuel_type}: P{old:.2f} -> P{new:.2f} (below P20 floor)")
 
     if would_skip:
-        print(f"\\n  WOULD SKIP — no applicable adjustment ({len(would_skip)} rows):")
+        print(f"\n  WOULD SKIP — no applicable adjustment ({len(would_skip)} rows):")
         for ft in would_skip:
             print(f"    {ft}")
 
@@ -301,7 +304,7 @@ if __name__ == "__main__":
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise EnvironmentError(
-            "SUPABASE_URL or SUPABASE_KEY not set.\\n"
+            "SUPABASE_URL or SUPABASE_KEY not set.\n"
             "Add them as GitHub Secrets or in a local .env file."
         )
 
