@@ -43,8 +43,8 @@ jobs:
       # Secrets are injected as environment variables — they are never visible in logs
       - name: Run DOE price sync
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_URL: ${https://yqvqipzafmtduwkrxpjq.supabase.co}
+          SUPABASE_KEY: ${sb_publishable_-JgTqt746ZfB2g9GYEDBCQ_mb5A7JRt}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: python scripts/sync_prices.py
 
