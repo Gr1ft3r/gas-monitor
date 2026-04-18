@@ -1,4 +1,3 @@
-import React, { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 import React, { useState, useEffect, useRef } from 'react';
 
