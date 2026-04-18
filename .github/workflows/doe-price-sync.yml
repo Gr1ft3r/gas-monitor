@@ -1,11 +1,9 @@
 name: DOE Price Auto-Sync
 
 on:
-  # Runs every Tuesday at 8:00 AM Philippine Time (PHT = UTC+8, so 00:00 UTC = 08:00 PHT)
   schedule:
-    - cron: "0 0 * * 2"
+    - cron: "0 0 * * 2"  # Every Tuesday 8:00 AM PHT (UTC+8)
 
-  # Allows you to manually trigger this from the GitHub Actions tab at any time
   workflow_dispatch:
     inputs:
       dry_run:
@@ -18,7 +16,6 @@ on:
           - "true"
 
 env:
-  # Opt into Node.js 24 now to prevent warnings and be ready for June 2026 cutover
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -28,31 +25,67 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      # Step 1: Check out your repository code
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Python
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      # Step 3: Install dependencies from requirements.txt
       - name: Install dependencies
         run: pip install -r scripts/requirements.txt
 
-      # Step 4: Run the sync script
-      # Secrets are injected as environment variables — they are never visible in logs
+      # Debug step: safely prints URL length and first 8 chars to confirm it loaded correctly.
+      # GitHub automatically masks the full secret value in logs, so this is safe.
+      - name: Validate secrets are set
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python - <<'EOF'
+          import os, sys, re
+
+          url = os.environ.get("SUPABASE_URL", "")
+          key = os.environ.get("SUPABASE_KEY", "")
+
+          print(f"SUPABASE_URL length : {len(url)} chars")
+          print(f"SUPABASE_URL starts : {url[:8]}...")
+          print(f"SUPABASE_URL ends   : ...{url[-15:] if len(url) > 15 else url}")
+          print(f"SUPABASE_KEY length : {len(key)} chars")
+
+          # Check for markdown link artifacts
+          if "[http" in url or "](http" in url:
+              print()
+              print("ERROR: SUPABASE_URL contains markdown link formatting!")
+              print("  Found: characters like [https://...](https://...)")
+              print("  Fix: Go to Settings > Secrets > SUPABASE_URL")
+              print("  Paste ONLY the bare URL: https://xxxx.supabase.co")
+              sys.exit(1)
+
+          if not url.startswith("https://"):
+              print()
+              print(f"ERROR: SUPABASE_URL does not start with https://")
+              print(f"  Got: {url[:30]}...")
+              sys.exit(1)
+
+          if not key:
+              print()
+              print("ERROR: SUPABASE_KEY is empty. Check your GitHub Secret.")
+              sys.exit(1)
+
+          print()
+          print("Secrets look valid.")
+          EOF
+
       - name: Run DOE price sync
         env:
-          SUPABASE_URL: https://yqvqipzafmtduwkrxpjq.supabase.co
-          SUPABASE_KEY: sb_publishable_-JgTqt746ZfB2g9GYEDBCQ_mb5A7JRt
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: python scripts/sync_prices.py
 
-      # Step 5: Post a summary to the GitHub Actions run summary page
       - name: Post run summary
         if: always()
         run: |
@@ -60,3 +93,4 @@ jobs:
           echo "- **Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Run time:** $(date +'%A, %B %d %Y %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
           echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Mode:** ${{ github.event.inputs.dry_run == 'true' && 'Dry Run' || 'Live' }}" >> $GITHUB_STEP_SUMMARY

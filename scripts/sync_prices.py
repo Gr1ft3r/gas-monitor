@@ -5,12 +5,32 @@ from bs4 import BeautifulSoup
 from datetime import datetime
 
 # --- CONFIGURATION ---
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
 # Read DRY_RUN from environment (set via GitHub Actions workflow_dispatch input)
 # "true" (string) = preview only, no DB writes. Anything else = live mode.
 DRY_RUN = os.environ.get("DRY_RUN", "false").strip().lower() == "true"
+
+def _sanitize_url(raw):
+    """
+    Strips common copy-paste artifacts from a URL secret:
+      - Markdown link format: [https://x.supabase.co](https://x.supabase.co)
+      - Surrounding quotes, spaces, trailing slashes
+    Always returns a clean bare URL like: https://x.supabase.co
+    """
+    if not raw:
+        return raw
+    raw = raw.strip().strip('"').strip("'")
+    # Remove markdown link syntax: [label](url) -> extract the url inside ()
+    md_match = re.search(r"\(https?://[^)]+\)", raw)
+    if md_match:
+        raw = md_match.group(0).strip("()")
+    # Remove any remaining [ ] wrappers
+    raw = re.sub(r"^\[|\]$", "", raw.strip())
+    # Remove trailing slash
+    raw = raw.rstrip("/")
+    return raw
+
+SUPABASE_URL = _sanitize_url(os.environ.get("SUPABASE_URL"))
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "").strip()
 
 SUPABASE_HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -23,16 +43,11 @@ SUPABASE_HEADERS = {
 # Historical PH max is ~P25/L (April 2026 mega-rollback). 30 gives a safe margin.
 MAX_SAFE_ADJUSTMENT = 30.0
 
-
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # SCRAPER
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
 def scrape_doe_advisory():
-    """
-    Scrapes Philippine news RSS feeds for the latest DOE fuel price advisory.
-    Returns signed floats: negative = rollback/cut, positive = hike.
-    Tries 3 sources in priority order; exits safely if all fail.
-    """
     print(f"[{datetime.now()}] Starting DOE advisory scrape...")
     result = {"gasoline_change": 0.0, "diesel_change": 0.0, "kerosene_change": 0.0}
 
@@ -41,10 +56,10 @@ def scrape_doe_advisory():
         {"name": "PhilStar RSS",    "url": "https://www.philstar.com/rss/business"},
         {"name": "Google News RSS", "url": "https://news.google.com/rss/search?q=oil+price+update+philippines+gasoline+diesel+when:3d&hl=en-PH&gl=PH&ceid=PH:en"},
     ]
+
     scrape_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     fuel_keywords  = ["fuel", "oil price", "gasoline", "diesel", "petrol", "pump price", "rollback", "hike"]
-
-    raw_news_text = ""
+    raw_news_text  = ""
 
     for source in sources:
         try:
@@ -88,37 +103,27 @@ def scrape_doe_advisory():
     result["diesel_change"]   = _extract_adjustment(["diesel"], raw_news_text)
     result["kerosene_change"] = _extract_adjustment(["kerosene", "gaas"], raw_news_text)
 
-    print(f"\nExtracted adjustments: {result}")
+    print(f"\\nExtracted adjustments: {result}")
     return result
 
 
 def _extract_adjustment(fuel_keywords_list, raw_text):
-    """
-    Extracts a signed price adjustment for a given fuel type from raw RSS text.
-
-    Fixes vs original:
-    - Strips HTML tags first (prevents img/src URL numbers from polluting regex)
-    - Added Pattern 4: action → price → fuel
-      (covers GMA headline style: "rollback of P3.41/liter for gasoline")
-    - Safety cap raised to 30.0 (handles large April 2026-style rollbacks)
-    """
-    # Strip HTML before regex — removes <img src="...2026_04_18..."> noise
     clean_text = BeautifulSoup(raw_text, "html.parser").get_text().lower()
 
     fuel_pattern = "|".join(fuel_keywords_list)
-    price_token  = r"(?:php|p|peso)?\s*(\d+\.?\d*)"
+    price_token  = r"(?:php|p|peso)?\\s*(\\d+\\.?\\d*)"
     action_token = r"(?:rollback|hike|increase|decrease|cut|drop|rise|down|up)"
     decrease_words = ["rollback", "decrease", "down", "cut", "slash", "lower", "drop", "reduce", "fell", "fall"]
     increase_words = ["hike", "increase", "up", "rise", "surge", "jump", "climb", "higher"]
 
     patterns = [
-        # Pattern 1: "diesel rollback of P1.50"         — fuel → action → price
+        # Pattern 1: fuel -> action -> price  e.g. "diesel rollback of P1.50"
         rf"(?:{fuel_pattern}).{{0,60}}?{action_token}.{{0,30}}?{price_token}",
-        # Pattern 2: "P1.50 rollback for diesel"        — price → action → fuel
+        # Pattern 2: price -> action -> fuel  e.g. "P1.50 rollback for diesel"
         rf"{price_token}.{{0,30}}?{action_token}.{{0,40}}?(?:{fuel_pattern})",
-        # Pattern 3: "diesel: down P1.50"               — fuel → direction → price
+        # Pattern 3: fuel -> down/up -> price  e.g. "diesel: down P1.50"
         rf"(?:{fuel_pattern}).{{0,20}}?(?:down|up).{{0,10}}?{price_token}",
-        # Pattern 4: "rollback of P3.41/liter for gas"  — action → price → fuel (GMA style)
+        # Pattern 4: action -> price -> fuel  e.g. "rollback of P3.41/liter for gasoline" (GMA style)
         rf"{action_token}.{{0,20}}?{price_token}.{{0,20}}?(?:{fuel_pattern})",
     ]
 
@@ -128,7 +133,7 @@ def _extract_adjustment(fuel_keywords_list, raw_text):
             try:
                 amount = float(match.group(1))
                 if amount > MAX_SAFE_ADJUSTMENT:
-                    ctx = clean_text[max(0, match.start()-40):match.end()+40]
+                    ctx = clean_text[max(0, match.start() - 40):match.end() + 40]
                     print(f"  Skipping {amount} — exceeds cap ({MAX_SAFE_ADJUSTMENT}). Context: ...{ctx}...")
                     continue
                 ctx_start = max(0, match.start() - 60)
@@ -145,33 +150,21 @@ def _extract_adjustment(fuel_keywords_list, raw_text):
                 continue
     return 0.0
 
-
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # SUPABASE UPDATER
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
 def apply_doe_updates(adjustments):
-    """
-    Applies DOE price adjustments to all Verified rows in Supabase.
-
-    Live mode:
-      - Archives the old Verified row (status → "Archived")
-      - Inserts a new Unverified row with old_price saved for "Was P{X}" UI label
-
-    Dry-run mode:
-      - Fetches Verified rows and computes what WOULD change
-      - Prints a full preview table
-      - Makes ZERO writes to the database
-    """
     prefix = "[DRY RUN] " if DRY_RUN else ""
 
     if all(v == 0.0 for v in adjustments.values()):
-        print(f"\n{prefix}No adjustments to apply. Database unchanged.")
+        print(f"\\n{prefix}No adjustments to apply. Database unchanged.")
         return
 
-    print(f"\n[{datetime.now()}] {prefix}Fetching Verified prices from Supabase...")
+    print(f"\\n[{datetime.now()}] {prefix}Fetching Verified prices from Supabase...")
     resp = requests.get(
         f"{SUPABASE_URL}/rest/v1/prices?status=eq.Verified&select=id,fuel_type,price,station_id",
-        headers=SUPABASE_HEADERS
+        headers=SUPABASE_HEADERS,
     )
     resp.raise_for_status()
     verified = resp.json()
@@ -181,7 +174,6 @@ def apply_doe_updates(adjustments):
         _dry_run_preview(verified, adjustments)
         return
 
-    # ── LIVE MODE ──
     updated = skipped = 0
     for item in verified:
         fuel      = item["fuel_type"].lower()
@@ -204,17 +196,15 @@ def apply_doe_updates(adjustments):
             skipped += 1
             continue
 
-        # Step 1: Archive old row
         archive = requests.patch(
             f"{SUPABASE_URL}/rest/v1/prices?id=eq.{item['id']}",
             headers=SUPABASE_HEADERS,
-            json={"status": "Archived"}
+            json={"status": "Archived"},
         )
         if archive.status_code not in (200, 204):
             print(f"  Failed to archive ID {item['id']}: {archive.text}")
             continue
 
-        # Step 2: Insert fresh Unverified row with old_price preserved
         insert = requests.post(
             f"{SUPABASE_URL}/rest/v1/prices",
             headers=SUPABASE_HEADERS,
@@ -225,7 +215,7 @@ def apply_doe_updates(adjustments):
                 "old_price":  old_price,
                 "status":     "Unverified",
                 "upvotes":    0,
-            }
+            },
         )
         if insert.status_code in (200, 201):
             direction = "UP  " if delta > 0 else "DOWN"
@@ -234,15 +224,11 @@ def apply_doe_updates(adjustments):
         else:
             print(f"  Insert failed for {item['fuel_type']}: {insert.text}")
 
-    print(f"\nDone. {updated} updated, {skipped} skipped.")
+    print(f"\\nDone. {updated} updated, {skipped} skipped.")
 
 
 def _dry_run_preview(verified, adjustments):
-    """
-    Prints a formatted preview of all changes that WOULD be applied.
-    No database writes are made.
-    """
-    print("\n" + "=" * 60)
+    print("\\n" + "=" * 60)
     print("  DRY RUN PREVIEW — no database changes will be made")
     print("=" * 60)
     print(f"  Adjustments to apply:")
@@ -251,9 +237,9 @@ def _dry_run_preview(verified, adjustments):
     print(f"    Kerosene : {adjustments['kerosene_change']:+.2f} PHP/L")
     print()
 
-    would_update  = []
-    would_skip    = []
-    would_guard   = []
+    would_update = []
+    would_skip   = []
+    would_guard  = []
 
     for item in verified:
         fuel      = item["fuel_type"].lower()
@@ -282,16 +268,16 @@ def _dry_run_preview(verified, adjustments):
         print(f"  {'Fuel Type':<25} {'Old Price':>10}  {'New Price':>10}  {'Change':>8}  Action")
         print(f"  {'-'*25} {'-'*10}  {'-'*10}  {'-'*8}  ------")
         for fuel_type, old, new, d in would_update:
-            arrow = "⬆  HIKE    " if d > 0 else "⬇  ROLLBACK"
+            arrow = "UP   HIKE    " if d > 0 else "DOWN ROLLBACK"
             print(f"  {fuel_type:<25}  P{old:>8.2f}  P{new:>8.2f}  {d:>+7.2f}  {arrow}")
 
     if would_guard:
-        print(f"\n  WOULD SKIP — price guard triggered ({len(would_guard)} rows):")
+        print(f"\\n  WOULD SKIP — price guard triggered ({len(would_guard)} rows):")
         for fuel_type, old, new in would_guard:
             print(f"    {fuel_type}: P{old:.2f} -> P{new:.2f} (below P20 floor)")
 
     if would_skip:
-        print(f"\n  WOULD SKIP — no applicable adjustment ({len(would_skip)} rows):")
+        print(f"\\n  WOULD SKIP — no applicable adjustment ({len(would_skip)} rows):")
         for ft in would_skip:
             print(f"    {ft}")
 
@@ -299,13 +285,13 @@ def _dry_run_preview(verified, adjustments):
     print(f"  Summary: {len(would_update)} would update, "
           f"{len(would_skip) + len(would_guard)} would skip")
     print("=" * 60)
-    print("  To apply these changes, re-run with DRY_RUN=false")
+    print("  To apply for real, re-run with DRY_RUN=false")
     print("=" * 60)
 
-
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
 # ENTRY POINT
-# ─────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     print("=" * 60)
     print("  Benguet Gas Monitor - DOE Auto-Sync Script")
@@ -315,7 +301,7 @@ if __name__ == "__main__":
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise EnvironmentError(
-            "SUPABASE_URL or SUPABASE_KEY not set.\n"
+            "SUPABASE_URL or SUPABASE_KEY not set.\\n"
             "Add them as GitHub Secrets or in a local .env file."
         )
 
