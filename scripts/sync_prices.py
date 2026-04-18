@@ -17,7 +17,7 @@ SUPABASE_HEADERS = {
 }
 
 # Safety clamp: never apply an adjustment larger than this (catches bad scrapes)
-MAX_SAFE_ADJUSTMENT = 10.0
+MAX_SAFE_ADJUSTMENT = 30.0
 
 # ─────────────────────────────────────────────
 # SCRAPER — tries multiple sources in priority order
@@ -114,8 +114,9 @@ def scrape_doe_advisory():
                 try:
                     amount = float(match.group(1))
                     if amount > MAX_SAFE_ADJUSTMENT:
-                        print(f"  Extracted amount {amount} exceeds safety cap. Skipping.")
-                        continue
+                        print(f"  ⚠️  Skipping amount {amount} — exceeds safety cap of {MAX_SAFE_ADJUSTMENT}. "
+                        f"Context: ...{text[max(0,match.start()-40):match.end()+40]}...")
+                    continue
                     context_start = max(0, match.start() - 60)
                     context_end   = min(len(text), match.end() + 60)
                     context = text[context_start:context_end]
