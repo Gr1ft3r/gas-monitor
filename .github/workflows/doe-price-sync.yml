@@ -1,0 +1,58 @@
+name: DOE Price Auto-Sync
+
+on:
+  # Runs every Tuesday at 8:00 AM Philippine Time (PHT = UTC+8, so 00:00 UTC = 08:00 PHT)
+  schedule:
+    - cron: "0 0 * * 2"
+
+  # Allows you to manually trigger this from the GitHub Actions tab at any time
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run? (prints changes but does NOT write to database)"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+jobs:
+  sync-prices:
+    name: Scrape DOE Advisory & Update Prices
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # Step 1: Check out your repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Set up Python
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # Step 3: Install dependencies from requirements.txt
+      - name: Install dependencies
+        run: pip install -r scripts/requirements.txt
+
+      # Step 4: Run the sync script
+      # Secrets are injected as environment variables — they are never visible in logs
+      - name: Run DOE price sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: python scripts/sync_prices.py
+
+      # Step 5: Post a summary to the GitHub Actions run summary page
+      - name: Post run summary
+        if: always()
+        run: |
+          echo "## DOE Sync Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Run time:** $(date +'%A, %B %d %Y %H:%M UTC')" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
