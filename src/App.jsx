@@ -11,6 +11,7 @@ function App() {
   const [updateModal, setUpdateModal] = useState({ isOpen: false, priceId: null, currentPrice: '', stationId: null, stationName: '', fuelName: '' });
   const [newPriceInput, setNewPriceInput] = useState('');
   const [alertModal, setAlertModal] = useState({ isOpen: false, title: '', message: '', isError: false });
+  const [customFuelType, setCustomFuelType] = useState('');
 
   // Form State
   const [stationBrand, setStationBrand] = useState('Petron');
@@ -32,7 +33,7 @@ function App() {
     else { setRawPrices(data); setDbError(null); }
   }
 
-    // Layer 2: Generate a stable fingerprint from browser characteristics
+  // Layer 2: Generate a stable fingerprint from browser characteristics
   async function generateFingerprint() {
     const components = [
       navigator.userAgent,
@@ -146,8 +147,14 @@ function App() {
 
   async function handleAddStation(e) {
     e.preventDefault();
+    // ✅ Use custom fuel name if "Other" was selected
+    const resolvedFuelType = fuelType === 'Other' ? customFuelType.trim() : fuelType;
+    if (!resolvedFuelType) {
+      setAlertModal({ isOpen: true, title: "Missing Fuel Type", message: "Please specify the fuel type in the text field.", isError: true });
+      return;
+    }
     const fullStationName = `${stationBrand} - ${branchName}`;
-    const newPrice = parseFloat(price);
+    const newPrice = parseFloat(price.replace('*', ''));
 
     if (isNaN(newPrice) || newPrice < 30 || newPrice > 250) {
       setAlertModal({ isOpen: true, title: "Invalid Input", message: "Please enter a realistic fuel price between ₱30 and ₱250.", isError: true });
@@ -158,24 +165,24 @@ function App() {
 
     if (existingStation && existingStation.length > 0) {
       const stationId = existingStation[0].id;
-      const { data: existingFuel } = await supabase.from('prices').select('id, price').eq('station_id', stationId).eq('fuel_type', fuelType).neq('status', 'Archived').limit(1);
+      const { data: existingFuel } = await supabase.from('prices').select('id, price').eq('station_id', stationId).eq('fuel_type', resolvedFuelType).neq('status', 'Archived').limit(1);
 
       if (existingFuel && existingFuel.length > 0) {
         await supabase.from('prices').update({ status: 'Archived' }).eq('id', existingFuel[0].id);
-        await supabase.from('prices').insert([{ station_id: stationId, fuel_type: fuelType, price: newPrice, old_price: existingFuel[0].price, status: 'Unverified', upvotes: 1 }]);
+        await supabase.from('prices').insert([{ station_id: stationId, fuel_type: resolvedFuelType, price: newPrice, old_price: existingFuel[0].price, status: 'Unverified', upvotes: 1 }]);
         setAlertModal({ isOpen: true, title: "Update Submitted", message: `Success! Updated ${fuelType} at ${fullStationName}. Awaiting community verification.`, isError: false });
       } else {
-        await supabase.from('prices').insert([{ station_id: stationId, fuel_type: fuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
+        await supabase.from('prices').insert([{ station_id: stationId, fuel_type: resolvedFuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
         setAlertModal({ isOpen: true, title: "Fuel Added", message: `Success! Added ${fuelType} to ${fullStationName}. Awaiting verification.`, isError: false });
       }
     } else {
       const { data: newStation } = await supabase.from('stations').insert([{ name: fullStationName, city: cityName, status: 'Unverified' }]).select();
       if (newStation && newStation.length > 0) {
-        await supabase.from('prices').insert([{ station_id: newStation[0].id, fuel_type: fuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
+        await supabase.from('prices').insert([{ station_id: newStation[0].id, fuel_type: resolvedFuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
         setAlertModal({ isOpen: true, title: "Station Added", message: `Thank you! ${fullStationName} is now on the map as an Unverified Location. It will be verified once 2 more drivers confirm it.`, isError: false });
       }
     }
-    setBranchName(''); setPrice(''); setFuelType(''); fetchPrices();
+    setBranchName(''); setPrice(''); setFuelType(''); fetchPrices(); setCustomFuelType('');
   }
 
   // --- DATA PREPARATION ---
@@ -211,16 +218,73 @@ function App() {
 
   const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Phoenix', 'Unioil', 'Independent'];
   const fuelDictionary = {
-    Petron: ['Blaze 100', 'XCS 95', 'Xtra Advance 93', 'Super Xtra 91', 'Turbo Diesel', 'Diesel Max', 'Gaas (Kerosene)'],
-    Shell: ['V-Power Racing 98', 'V-Power Gasoline 95', 'FuelSave Unleaded 91', 'V-Power Diesel', 'Standard Diesel', 'Kerosene'],
-    Caltex: ['Platinum 95', 'Silver 91', 'Diesel with Techron D', 'Kerosene'],
-    Cleanfuel: ['Race 97', 'Premium 95', 'Clean 91', 'High-Performance Diesel', 'Auto LPG'],
-    'Flying V': ['Rush 97', 'Thunder 95', 'Volt 91', 'Biodiesel'],
-    SeaOil: ['Extreme 97', 'Extreme 95', 'Extreme U 91', 'Exceed Diesel', 'Standard Diesel', 'E-Gas', 'Kerosene'],
-    Total: ['Excellium 95', 'Premier 91', 'Standard Diesel', 'Excellium Diesel'],
-    Phoenix: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
-    Unioil: ['Premium 97', 'Premium 95', 'Unleaded 91', 'E-Gas', 'Diesel'],
-    Default: ['Premium 95', 'Unleaded 91', 'Standard Diesel']
+    Petron: [
+      'Blaze 100',
+      'XCS 95',
+      'Xtra Advance 93',
+      'Super Xtra 91',
+      'Turbo Diesel',
+      'Diesel Max',
+      'Kerosene',
+    ],
+    Shell: [
+      'V-Power Gasoline 95',
+      'FuelSave 95',
+      'FuelSave Unleaded 91',
+      'V-Power Diesel',
+      'FuelSave Diesel',
+      'Kerosene',
+    ],
+    Caltex: [
+      'Platinum 95 with Techron',
+      'Silver 91 with Techron',
+      'Power Diesel with Techron D',
+      'Diesel with Techron D',
+      'Kerosene',
+    ],
+    Cleanfuel: [
+      'Premium 95',
+      'Clean 91',
+      'Diesel',
+    ],
+    'Flying V': [
+      'Gasoline 95',
+      'Unleaded 91',
+      'Biodiesel',
+    ],
+    SeaOil: [
+      'Extreme 97',
+      'Extreme 95',
+      'Extreme U 91',
+      'Exceed Diesel',
+      'Kerosene',
+    ],
+    Total: [
+      'Excellium 95',
+      'Premier 91',
+      'Excellium Diesel',
+      'Standard Diesel',
+    ],
+    Phoenix: [
+      'Premium 98',
+      'Premium 95',
+      'Super Regular 91',
+      'Biodiesel',
+      'Autogas (LPG)',
+    ],
+    Unioil: [
+      'Premium 97',
+      'Premium 95',
+      'Unleaded 91',
+      'Euro 5 Diesel',
+    ],
+    Independent: [
+      'Premium 95',
+      'Unleaded 91',
+      'Diesel',
+      'Kerosene',
+    ],
+    Default: ['Premium 95', 'Unleaded 91', 'Diesel'],
   };
   const availableFuels = fuelDictionary[stationBrand] || fuelDictionary.Default;
 
@@ -358,13 +422,38 @@ function App() {
             <select className="border p-2 rounded text-sm bg-gray-50" value={cityName} onChange={(e) => setCityName(e.target.value)}>
               <option>Baguio City</option><option>La Trinidad</option><option>Tuba</option>
             </select>
-            <div className="flex gap-2">
-              <select required className="border p-2 rounded text-sm w-1/2 bg-gray-50 text-gray-700" value={fuelType} onChange={(e) => setFuelType(e.target.value)}>
-                <option value="" disabled hidden>Select Fuel</option>
+            <div className="flex flex-col gap-2">
+              <select
+                required={fuelType !== 'Other'}
+                className="border p-2 rounded text-sm bg-gray-50 text-gray-700"
+                value={fuelType}
+                onChange={(e) => { setFuelType(e.target.value); setCustomFuelType(''); }}
+              >
+                <option value="" disabled hidden>Select Fuel Type</option>
                 {availableFuels.map(f => <option key={f} value={f}>{f}</option>)}
+                <option value="Other">✏️ Other (specify below)</option>
               </select>
-              <input type="number" step="0.01" placeholder="Price (₱)" required className="border p-2 rounded text-sm w-1/2 bg-gray-50" value={price} onChange={(e) => setPrice(e.target.value)} />
+
+              {fuelType === 'Other' && (
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Autogas, E10, Bio-Ethanol..."
+                  className="border p-2 rounded text-sm bg-gray-50 border-blue-400 ring-1 ring-blue-300"
+                  value={customFuelType}
+                  onChange={(e) => setCustomFuelType(e.target.value)}
+                />
+              )}
             </div>
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="Price (e.g. 68.50)"
+              required
+              className="border p-2 rounded text-sm w-1/2 bg-gray-50"
+              value={price}
+              onChange={(e) => setPrice(e.target.value)}
+            />
             <button type="submit" className="bg-blue-800 text-white font-bold py-2 rounded mt-2 hover:bg-blue-900">Submit Addition</button>
           </form>
         </div>
@@ -377,7 +466,16 @@ function App() {
               <form onSubmit={submitPriceUpdate} className="flex flex-col gap-3">
                 <div>
                   <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">New Price (₱)</label>
-                  <input type="number" step="0.01" autoFocus required className="w-full mt-1 border border-gray-300 p-3 rounded-lg text-lg font-black text-gray-900 bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none" value={newPriceInput} onChange={(e) => setNewPriceInput(e.target.value)} />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoFocus
+                    required
+                    placeholder="e.g. 68.50"
+                    className="w-full mt-1 border border-gray-300 p-3 rounded-lg text-lg font-black text-gray-900 bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                    value={newPriceInput}
+                    onChange={(e) => setNewPriceInput(e.target.value)}
+                  />
                   <p className="text-[10px] text-gray-500 mt-2 italic text-center leading-tight">
                     <span className="not-italic mr-1">📍</span>Help keep your community moving. Your anonymous update goes live once 3 local drivers verify it.
                   </p>
