@@ -3,6 +3,8 @@ import React, { useState, useEffect, useRef } from 'react';
 
 export default function App() {
   const longPressTimer = useRef(null);
+  const deleteHoldTimer = useRef(null);
+
   // --- STATE VARIABLES ---
   const [rawPrices, setRawPrices] = useState([]);
   const [selectedBrand, setSelectedBrand] = useState('All');
@@ -15,7 +17,6 @@ export default function App() {
   const [customFuelType, setCustomFuelType] = useState('');
   const [deleteModal, setDeleteModal] = useState({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' });
   const [deletePinInput, setDeletePinInput] = useState('');
-  const deleteHoldTimer = useRef(null);
 
   // Form State
   const [stationBrand, setStationBrand] = useState('Petron');
@@ -37,8 +38,6 @@ export default function App() {
     else { setRawPrices(data); setDbError(null); }
   }
 
-
-  // Layer 2: Generate a stable fingerprint from browser characteristics
   async function generateFingerprint() {
     const components = [
       navigator.userAgent,
@@ -51,57 +50,31 @@ export default function App() {
       navigator.deviceMemory || 'unknown',
       Intl.DateTimeFormat().resolvedOptions().timeZone,
     ].join('|||');
-
-    // Use the browser's native SubtleCrypto API to hash everything into a clean ID
     const msgBuffer = new TextEncoder().encode(components);
     const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return 'fp_' + hashArray.map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 20);
   }
 
-  // Layer 1 + 2 combined: localStorage first, fingerprint as fallback and supplement
   async function getDeviceId() {
     const fingerprint = await generateFingerprint();
-
-    // If localStorage is available, use it as the primary anchor
     try {
       let storedId = localStorage.getItem('gas_monitor_device_id');
       if (!storedId) {
-        // First visit: store the fingerprint as the localStorage ID too
         localStorage.setItem('gas_monitor_device_id', fingerprint);
         return fingerprint;
       }
-      // Return a composite: stored ID + fingerprint, giving us two signals at once
       return storedId;
     } catch (e) {
-      // If localStorage is blocked (private browsing on some browsers),
-      // fall back gracefully to the fingerprint alone
       return fingerprint;
     }
   }
 
-  // ✅ FIX 1: Curly braces added so return only fires on error
-  async function handleUpvotePrice(priceId, currentUpvotes, stationId, fuelType) {
-    const deviceId = await getDeviceId();
-    const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'upvote' }]);
-    if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You have already verified this price!", isError: true }); return; }
-
-    const newUpvoteCount = currentUpvotes + 1;
-    if (newUpvoteCount >= 3) {
-      await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelType).eq('status', 'Verified');
-      await supabase.from('prices').update({ upvotes: newUpvoteCount, status: 'Verified' }).eq('id', priceId);
-      await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId);
-    } else {
-      await supabase.from('prices').update({ upvotes: newUpvoteCount }).eq('id', priceId);
-    }
-    if (verifiedRow) {
-      await cascadePrice(stationId, fuelType, verifiedRow.price, verifiedRow.old_price, false);
-    }
-    fetchPrices();
-  }
-
+  // ─────────────────────────────────────────────────────────────
+  // ADMIN DELETE: Long-press "Not Sold" → PIN prompt → archive
+  // ─────────────────────────────────────────────────────────────
   async function handleAdminDelete() {
-    const { stationId, priceId, fuelType, mode } = deleteModal;
+    const { stationId, priceId, fuelType: deleteFuelType, mode } = deleteModal;
     const SECRET_PIN = '6949';
 
     if (deletePinInput.trim() !== SECRET_PIN) {
@@ -113,9 +86,11 @@ export default function App() {
 
     if (mode === 'fuel') {
       await supabase.from('prices').update({ status: 'Archived' }).eq('id', priceId);
+      setAlertModal({ isOpen: true, title: '🗑️ Fuel Removed', message: `${deleteFuelType} has been permanently removed from this station.`, isError: false });
     } else {
       await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).neq('status', 'Archived');
       await supabase.from('stations').update({ status: 'Archived' }).eq('id', stationId);
+      setAlertModal({ isOpen: true, title: '🗑️ Station Deleted', message: 'Station has been permanently removed.', isError: false });
     }
 
     setDeleteModal({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' });
@@ -124,35 +99,24 @@ export default function App() {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // CASCADE PRICING: When a price is confirmed for a branded
-  // station, propagate the same price to all other stations of
-  // the same brand in the same city (kerosene excluded).
+  // CASCADE PRICING
   // ─────────────────────────────────────────────────────────────
-  async function cascadePrice(stationId, fuelType, newPrice, oldPrice, asVerified) {
-    // Skip kerosene — pricing varies per station
-    if (fuelType.toLowerCase().includes('kerosene')) return;
+  async function cascadePrice(stationId, fuelTypeName, newPrice, oldPrice, asVerified) {
+    if (fuelTypeName.toLowerCase().includes('kerosene')) return;
 
-    // Get the city and name (brand) of the triggering station
     const { data: originStation } = await supabase
-      .from('stations')
-      .select('id, name, city')
-      .eq('id', stationId)
-      .single();
-
+      .from('stations').select('id, name, city').eq('id', stationId).single();
     if (!originStation) return;
 
-    // Detect brand from station name
     const brandKeywords = ['Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Phoenix', 'Seaoil', 'Flying V', 'Total'];
     const matchedBrand = brandKeywords.find(b => originStation.name.toLowerCase().includes(b.toLowerCase()));
-    if (!matchedBrand) return; // Independent stations — no cascade
+    if (!matchedBrand) return;
 
-    // Find all OTHER stations in the same city with the same brand
     const { data: siblingStations } = await supabase
-      .from('stations')
-      .select('id, name')
+      .from('stations').select('id, name')
       .ilike('name', `%${matchedBrand}%`)
       .eq('city', originStation.city)
-      .neq('id', stationId); // Exclude the triggering station itself
+      .neq('id', stationId);
 
     if (!siblingStations || siblingStations.length === 0) return;
 
@@ -161,32 +125,26 @@ export default function App() {
     let cascadeCount = 0;
 
     for (const sibling of siblingStations) {
-      // Fetch the sibling's OWN current active price so "Was ₱X" is accurate per station
       const { data: siblingCurrentRows } = await supabase
-        .from('prices')
-        .select('id, price')
+        .from('prices').select('id, price')
         .eq('station_id', sibling.id)
-        .eq('fuel_type', fuelType)
+        .eq('fuel_type', fuelTypeName)
         .neq('status', 'Archived')
         .order('id', { ascending: false })
         .limit(1);
 
       const siblingOldPrice = siblingCurrentRows && siblingCurrentRows.length > 0
         ? siblingCurrentRows[0].price
-        : oldPrice; // fallback to trigger station's old price if sibling had none
+        : oldPrice;
 
-      // Archive the sibling's existing active price for this fuel type
-      await supabase
-        .from('prices')
-        .update({ status: 'Archived' })
+      await supabase.from('prices').update({ status: 'Archived' })
         .eq('station_id', sibling.id)
-        .eq('fuel_type', fuelType)
+        .eq('fuel_type', fuelTypeName)
         .neq('status', 'Archived');
 
-      // Insert the new cascaded price using the sibling's own previous price
       const { error } = await supabase.from('prices').insert([{
         station_id: sibling.id,
-        fuel_type: fuelType,
+        fuel_type: fuelTypeName,
         price: newPrice,
         old_price: siblingOldPrice,
         status: cascadeStatus,
@@ -197,8 +155,30 @@ export default function App() {
     }
 
     if (cascadeCount > 0) {
-      console.log(`[CASCADE] ${fuelType} @ ${matchedBrand}/${originStation.city}: updated ${cascadeCount} sibling station(s) as ${cascadeStatus}`);
+      console.log(`[CASCADE] ${fuelTypeName} @ ${matchedBrand}/${originStation.city}: updated ${cascadeCount} sibling station(s) as ${cascadeStatus}`);
     }
+  }
+
+  async function handleUpvotePrice(priceId, currentUpvotes, stationId, fuelTypeName) {
+    const deviceId = await getDeviceId();
+    const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'upvote' }]);
+    if (logError && logError.code === '23505') {
+      setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You have already verified this price!", isError: true });
+      return;
+    }
+
+    const newUpvoteCount = currentUpvotes + 1;
+    if (newUpvoteCount >= 3) {
+      await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelTypeName).eq('status', 'Verified');
+      const { data: verifiedRows } = await supabase.from('prices').update({ upvotes: newUpvoteCount, status: 'Verified' }).eq('id', priceId).select();
+      await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId);
+      if (verifiedRows && verifiedRows.length > 0) {
+        await cascadePrice(stationId, fuelTypeName, verifiedRows[0].price, verifiedRows[0].old_price, false);
+      }
+    } else {
+      await supabase.from('prices').update({ upvotes: newUpvoteCount }).eq('id', priceId);
+    }
+    fetchPrices();
   }
 
   async function submitPriceUpdate(e) {
@@ -216,47 +196,46 @@ export default function App() {
         station_id: stationId, fuel_type: fuelName, price: newPrice, old_price: currentPrice,
         status: isSuperAdmin ? 'Verified' : 'Unverified', upvotes: isSuperAdmin ? 3 : 1
       }]);
-      // If admin used the * power, verify the station and cascade to same-brand/city stations instantly
       if (isSuperAdmin) {
         await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId).eq('status', 'Unverified');
-        await cascadePrice(stationId, fuelName, newPrice, currentPrice, true); // cascade as Verified
+        await cascadePrice(stationId, fuelName, newPrice, currentPrice, true);
       }
       fetchPrices();
       setUpdateModal({ isOpen: false });
       setNewPriceInput('');
-      setAlertModal({ isOpen: true, title: isSuperAdmin ? "Verified" : "Update Submitted", message: isSuperAdmin ? "Super Admin: Price instantly verified!" : "Update submitted! Awaiting community verification.", isError: false });
+      setAlertModal({
+        isOpen: true,
+        title: isSuperAdmin ? "✅ Verified" : "Update Submitted",
+        message: isSuperAdmin
+          ? "Price instantly verified! Station has also been marked Active."
+          : "Update submitted! Awaiting community verification.",
+        isError: false
+      });
     } else {
       setAlertModal({ isOpen: true, title: "Invalid Input", message: "Please enter a realistic fuel price.", isError: true });
     }
-
-    // NEW — added after the price insert
-    if (isSuperAdmin) {
-      await supabase.from('stations')
-        .update({ status: 'Active' })
-        .eq('id', stationId)
-        .eq('status', 'Unverified');  // ← safety guard
-    }
-
   }
 
-  // ✅ FIX 2: Curly braces added so return only fires on error
   async function handleOutOfStock(priceId, currentVotes) {
     const deviceId = await getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'out_of_stock' }]);
-    if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this as Out of Stock!", isError: true }); return; }
-
+    if (logError && logError.code === '23505') {
+      setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this as Out of Stock!", isError: true });
+      return;
+    }
     const votes = currentVotes ? currentVotes : 0;
     await supabase.from('prices').update({ out_of_stock_votes: votes + 1 }).eq('id', priceId);
     fetchPrices();
     setAlertModal({ isOpen: true, title: "Report Received", message: "Report received! If 2 more people confirm this, it will be marked Out of Stock.", isError: false });
   }
 
-  // ✅ FIX 3: Curly braces added + actual database update calls restored
   async function handleRetiredFuel(priceId, currentVotes) {
     const deviceId = await getDeviceId();
     const { error: logError } = await supabase.from('user_votes').insert([{ price_id: priceId, device_id: deviceId, vote_type: 'retired' }]);
-    if (logError && logError.code === '23505') { setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this fuel as not sold!", isError: true }); return; }
-
+    if (logError && logError.code === '23505') {
+      setAlertModal({ isOpen: true, title: "Anti-Spam", message: "You already reported this fuel as not sold!", isError: true });
+      return;
+    }
     const votes = (currentVotes ? currentVotes : 0) + 1;
     if (votes >= 3) {
       await supabase.from('prices').update({ status: 'Archived', retired_votes: votes }).eq('id', priceId);
@@ -270,7 +249,6 @@ export default function App() {
 
   async function handleAddStation(e) {
     e.preventDefault();
-    // ✅ Use custom fuel name if "Other" was selected
     const resolvedFuelType = fuelType === 'Other' ? customFuelType.trim() : fuelType;
     if (!resolvedFuelType) {
       setAlertModal({ isOpen: true, title: "Missing Fuel Type", message: "Please specify the fuel type in the text field.", isError: true });
@@ -278,25 +256,21 @@ export default function App() {
     }
     const fullStationName = `${stationBrand} - ${branchName}`;
     const newPrice = parseFloat(price.replace('*', ''));
-
     if (isNaN(newPrice) || newPrice < 30 || newPrice > 250) {
       setAlertModal({ isOpen: true, title: "Invalid Input", message: "Please enter a realistic fuel price between ₱30 and ₱250.", isError: true });
       return;
     }
-
     const { data: existingStation } = await supabase.from('stations').select('id, status').ilike('name', fullStationName).limit(1);
-
     if (existingStation && existingStation.length > 0) {
       const stationId = existingStation[0].id;
       const { data: existingFuel } = await supabase.from('prices').select('id, price').eq('station_id', stationId).eq('fuel_type', resolvedFuelType).neq('status', 'Archived').limit(1);
-
       if (existingFuel && existingFuel.length > 0) {
         await supabase.from('prices').update({ status: 'Archived' }).eq('id', existingFuel[0].id);
         await supabase.from('prices').insert([{ station_id: stationId, fuel_type: resolvedFuelType, price: newPrice, old_price: existingFuel[0].price, status: 'Unverified', upvotes: 1 }]);
-        setAlertModal({ isOpen: true, title: "Update Submitted", message: `Success! Updated ${fuelType} at ${fullStationName}. Awaiting community verification.`, isError: false });
+        setAlertModal({ isOpen: true, title: "Update Submitted", message: `Success! Updated ${resolvedFuelType} at ${fullStationName}. Awaiting community verification.`, isError: false });
       } else {
         await supabase.from('prices').insert([{ station_id: stationId, fuel_type: resolvedFuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
-        setAlertModal({ isOpen: true, title: "Fuel Added", message: `Success! Added ${fuelType} to ${fullStationName}. Awaiting verification.`, isError: false });
+        setAlertModal({ isOpen: true, title: "Fuel Added", message: `Success! Added ${resolvedFuelType} to ${fullStationName}. Awaiting verification.`, isError: false });
       }
     } else {
       const { data: newStation } = await supabase.from('stations').insert([{ name: fullStationName, city: cityName, status: 'Unverified' }]).select();
@@ -305,7 +279,7 @@ export default function App() {
         setAlertModal({ isOpen: true, title: "Station Added", message: `Thank you! ${fullStationName} is now on the map as an Unverified Location. It will be verified once 2 more drivers confirm it.`, isError: false });
       }
     }
-    setBranchName(''); setPrice(''); setFuelType(''); fetchPrices(); setCustomFuelType('');
+    setBranchName(''); setPrice(''); setFuelType(''); setCustomFuelType(''); fetchPrices();
   }
 
   // --- DATA PREPARATION ---
@@ -341,72 +315,16 @@ export default function App() {
 
   const brands = ['All', 'Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Flying V', 'SeaOil', 'Total', 'Phoenix', 'Unioil', 'Independent'];
   const fuelDictionary = {
-    Petron: [
-      'Blaze 100',
-      'XCS 95',
-      'Xtra Advance 93',
-      'Super Xtra 91',
-      'Turbo Diesel',
-      'Diesel Max',
-      'Kerosene',
-    ],
-    Shell: [
-      'V-Power Gasoline 95',
-      'FuelSave 95',
-      'FuelSave Unleaded 91',
-      'V-Power Diesel',
-      'FuelSave Diesel',
-      'Kerosene',
-    ],
-    Caltex: [
-      'Platinum 95 with Techron',
-      'Silver 91 with Techron',
-      'Power Diesel with Techron D',
-      'Diesel with Techron D',
-      'Kerosene',
-    ],
-    Cleanfuel: [
-      'Premium 95',
-      'Clean 91',
-      'Diesel',
-    ],
-    'Flying V': [
-      'Gasoline 95',
-      'Unleaded 91',
-      'Biodiesel',
-    ],
-    SeaOil: [
-      'Extreme 97',
-      'Extreme 95',
-      'Extreme U 91',
-      'Exceed Diesel',
-      'Kerosene',
-    ],
-    Total: [
-      'Excellium 95',
-      'Premier 91',
-      'Excellium Diesel',
-      'Standard Diesel',
-    ],
-    Phoenix: [
-      'Premium 98',
-      'Premium 95',
-      'Super Regular 91',
-      'Biodiesel',
-      'Autogas (LPG)',
-    ],
-    Unioil: [
-      'Premium 97',
-      'Premium 95',
-      'Unleaded 91',
-      'Euro 5 Diesel',
-    ],
-    Independent: [
-      'Premium 95',
-      'Unleaded 91',
-      'Diesel',
-      'Kerosene',
-    ],
+    Petron: ['Blaze 100', 'XCS 95', 'Xtra Advance 93', 'Super Xtra 91', 'Turbo Diesel', 'Diesel Max', 'Kerosene'],
+    Shell: ['V-Power Gasoline 95', 'FuelSave 95', 'FuelSave Unleaded 91', 'V-Power Diesel', 'FuelSave Diesel', 'Kerosene'],
+    Caltex: ['Platinum 95 with Techron', 'Silver 91 with Techron', 'Power Diesel with Techron D', 'Diesel with Techron D', 'Kerosene'],
+    Cleanfuel: ['Premium 95', 'Clean 91', 'Diesel'],
+    'Flying V': ['Gasoline 95', 'Unleaded 91', 'Biodiesel'],
+    SeaOil: ['Extreme 97', 'Extreme 95', 'Extreme U 91', 'Exceed Diesel', 'Kerosene'],
+    Total: ['Excellium 95', 'Premier 91', 'Excellium Diesel', 'Standard Diesel'],
+    Phoenix: ['Premium 98', 'Premium 95', 'Super Regular 91', 'Biodiesel', 'Autogas (LPG)'],
+    Unioil: ['Premium 97', 'Premium 95', 'Unleaded 91', 'Euro 5 Diesel'],
+    Independent: ['Premium 95', 'Unleaded 91', 'Diesel', 'Kerosene'],
     Default: ['Premium 95', 'Unleaded 91', 'Diesel'],
   };
   const availableFuels = fuelDictionary[stationBrand] || fuelDictionary.Default;
@@ -537,9 +455,7 @@ export default function App() {
                                 onMouseUp={() => clearTimeout(deleteHoldTimer.current)}
                                 onMouseLeave={() => clearTimeout(deleteHoldTimer.current)}
                                 className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors select-none"
-                              >
-                                🗑️ Not Sold
-                              </button>
+                              >🗑️ Not Sold</button>
                             </div>
                           </div>
                         ))}
@@ -579,7 +495,6 @@ export default function App() {
                 {availableFuels.map(f => <option key={f} value={f}>{f}</option>)}
                 <option value="Other">✏️ Other (specify below)</option>
               </select>
-
               {fuelType === 'Other' && (
                 <input
                   type="text"
@@ -604,6 +519,7 @@ export default function App() {
           </form>
         </div>
 
+        {/* UPDATE PRICE MODAL */}
         {updateModal.isOpen && (
           <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-lg w-full max-w-sm p-5 border border-gray-200">
@@ -640,8 +556,7 @@ export default function App() {
                     autoFocus
                     required
                     placeholder="e.g. 68.50"
-                    className={`w-full mt-1 border p-3 rounded-lg text-lg font-black bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors ${newPriceInput.endsWith('*') ? 'border-yellow-400 text-yellow-900 bg-yellow-50' : 'border-gray-300 text-gray-900'
-                      }`}
+                    className={`w-full mt-1 border p-3 rounded-lg text-lg font-black bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors ${newPriceInput.endsWith('*') ? 'border-yellow-400 text-yellow-900 bg-yellow-50' : 'border-gray-300 text-gray-900'}`}
                     value={newPriceInput}
                     onChange={(e) => setNewPriceInput(e.target.value)}
                   />
@@ -658,6 +573,7 @@ export default function App() {
           </div>
         )}
 
+        {/* ALERT MODAL */}
         {alertModal.isOpen && (
           <div className="fixed inset-0 bg-black/60 z-[60] flex items-center justify-center p-4 backdrop-blur-sm">
             <div className="bg-white rounded-xl shadow-lg w-full max-w-sm p-6 border border-gray-200 text-center">
@@ -669,6 +585,62 @@ export default function App() {
               <button onClick={() => setAlertModal({ ...alertModal, isOpen: false })} className={`w-full py-3 rounded-lg font-bold text-white transition-colors ${alertModal.isError ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
                 Got it
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* ADMIN DELETE MODAL */}
+        {deleteModal.isOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[70] p-4">
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6">
+              <div className="flex items-center gap-3 mb-1">
+                <span className="text-2xl">🗑️</span>
+                <h2 className="text-lg font-black text-gray-900">Admin Delete</h2>
+              </div>
+              <p className="text-sm text-gray-500 mb-1">
+                <span className="font-semibold text-gray-700">{deleteModal.stationName}</span>
+              </p>
+              <p className="text-sm text-red-600 font-bold mb-4">
+                {deleteModal.mode === 'fuel'
+                  ? `Delete "${deleteModal.fuelType}" from this station?`
+                  : `Delete this entire station and all its fuel prices?`}
+              </p>
+              <div className="flex gap-2 mb-4">
+                <button
+                  type="button"
+                  onClick={() => setDeleteModal(m => ({ ...m, mode: 'fuel' }))}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-colors ${deleteModal.mode === 'fuel' ? 'bg-orange-100 text-orange-800 border-orange-300' : 'bg-gray-50 text-gray-400 border-gray-200'}`}
+                >⛽ This Fuel Only</button>
+                <button
+                  type="button"
+                  onClick={() => setDeleteModal(m => ({ ...m, mode: 'station' }))}
+                  className={`flex-1 py-2 rounded-lg text-xs font-bold border transition-colors ${deleteModal.mode === 'station' ? 'bg-red-100 text-red-800 border-red-300' : 'bg-gray-50 text-gray-400 border-gray-200'}`}
+                >🏪 Entire Station</button>
+              </div>
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Enter Admin PIN</label>
+              <input
+                type="password"
+                inputMode="numeric"
+                autoFocus
+                maxLength={6}
+                placeholder="••••"
+                className="w-full mt-1 mb-4 border border-gray-300 p-3 rounded-lg text-lg font-black text-center tracking-widest text-gray-900 bg-gray-50 focus:ring-2 focus:ring-red-400 focus:border-red-400 outline-none"
+                value={deletePinInput}
+                onChange={(e) => setDeletePinInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleAdminDelete(); }}
+              />
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={() => { setDeleteModal({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' }); setDeletePinInput(''); }}
+                  className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-600 font-bold text-sm hover:bg-gray-50 transition-colors"
+                >Cancel</button>
+                <button
+                  type="button"
+                  onClick={handleAdminDelete}
+                  className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold text-sm hover:bg-red-700 transition-colors"
+                >Delete</button>
+              </div>
             </div>
           </div>
         )}
