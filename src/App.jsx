@@ -94,8 +94,6 @@ export default function App() {
     if (verifiedRow) {
       await cascadePrice(stationId, fuelType, verifiedRow.price, verifiedRow.old_price, false);
     }
-  } else {
-    await supabase.from('prices').update({ upvotes: newUpvoteCount }).eq('id', priceId);
   }
   fetchPrices();
 }
