@@ -13,6 +13,9 @@ export default function App() {
   const [newPriceInput, setNewPriceInput] = useState('');
   const [alertModal, setAlertModal] = useState({ isOpen: false, title: '', message: '', isError: false });
   const [customFuelType, setCustomFuelType] = useState('');
+  const [deleteModal, setDeleteModal] = useState({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' });
+  const [deletePinInput, setDeletePinInput] = useState('');
+  const deleteHoldTimer = useRef(null);
 
   // Form State
   const [stationBrand, setStationBrand] = useState('Petron');
@@ -94,6 +97,29 @@ export default function App() {
     if (verifiedRow) {
       await cascadePrice(stationId, fuelType, verifiedRow.price, verifiedRow.old_price, false);
     }
+    fetchPrices();
+  }
+
+  async function handleAdminDelete() {
+    const { stationId, priceId, fuelType, mode } = deleteModal;
+    const SECRET_PIN = '6949';
+
+    if (deletePinInput.trim() !== SECRET_PIN) {
+      setDeletePinInput('');
+      setAlertModal({ isOpen: true, title: '❌ Wrong PIN', message: 'Incorrect PIN. Delete cancelled.', isError: true });
+      setDeleteModal({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' });
+      return;
+    }
+
+    if (mode === 'fuel') {
+      await supabase.from('prices').update({ status: 'Archived' }).eq('id', priceId);
+    } else {
+      await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).neq('status', 'Archived');
+      await supabase.from('stations').update({ status: 'Archived' }).eq('id', stationId);
+    }
+
+    setDeleteModal({ isOpen: false, stationId: null, stationName: '', priceId: null, fuelType: '', mode: 'fuel' });
+    setDeletePinInput('');
     fetchPrices();
   }
 
@@ -490,7 +516,30 @@ export default function App() {
                               <button onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }} className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded">👍 Confirm</button>
                               <button onClick={(e) => { e.stopPropagation(); setUpdateModal({ isOpen: true, priceId: fuel.id, currentPrice: fuel.price, stationId: station.id, stationName: station.name, fuelName: fuel.fuel_type }); setNewPriceInput(''); }} className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded">✏️ Update</button>
                               <button onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }} className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🚩 Empty</button>
-                              <button onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }} className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors">🗑️ Not Sold</button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }}
+                                onTouchStart={(e) => {
+                                  e.stopPropagation();
+                                  deleteHoldTimer.current = setTimeout(() => {
+                                    setDeletePinInput('');
+                                    setDeleteModal({ isOpen: true, stationId: station.id, stationName: station.name, priceId: fuel.id, fuelType: fuel.fuel_type, mode: 'fuel' });
+                                  }, 800);
+                                }}
+                                onTouchEnd={() => clearTimeout(deleteHoldTimer.current)}
+                                onTouchMove={() => clearTimeout(deleteHoldTimer.current)}
+                                onMouseDown={(e) => {
+                                  e.stopPropagation();
+                                  deleteHoldTimer.current = setTimeout(() => {
+                                    setDeletePinInput('');
+                                    setDeleteModal({ isOpen: true, stationId: station.id, stationName: station.name, priceId: fuel.id, fuelType: fuel.fuel_type, mode: 'fuel' });
+                                  }, 800);
+                                }}
+                                onMouseUp={() => clearTimeout(deleteHoldTimer.current)}
+                                onMouseLeave={() => clearTimeout(deleteHoldTimer.current)}
+                                className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors select-none"
+                              >
+                                🗑️ Not Sold
+                              </button>
                             </div>
                           </div>
                         ))}
