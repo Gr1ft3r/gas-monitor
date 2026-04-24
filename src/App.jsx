@@ -342,6 +342,7 @@ export default function App() {
       <header className="bg-blue-800 text-white p-4 shadow-md sticky top-0 z-20">
         <h1 className="text-xl font-bold">Benguet Gas Monitor</h1>
         <p className="text-xs text-blue-200">Community-Driven Pump Prices</p>
+        <p className="text-[10px] text-blue-300/60 mt-0.5 font-mono">v{__APP_VERSION__}</p>
       </header>
 
       <div className="bg-white shadow-sm border-b border-gray-200 p-3 overflow-x-auto whitespace-nowrap sticky top-[60px] z-10">
