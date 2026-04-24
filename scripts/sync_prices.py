@@ -43,9 +43,9 @@ def scrape_doe_advisory():
     result = {"gasoline_change": 0.0, "diesel_change": 0.0, "kerosene_change": 0.0}
 
     sources = [
-        {"name": "GMA News RSS",    "url": "https://data.gmanetwork.com/gno/rss/money/feed.xml"},
-        {"name": "PhilStar RSS",    "url": "https://www.philstar.com/rss/business"},
-        {"name": "Google News RSS", "url": "https://news.google.com/rss/search?q=oil+price+update+philippines+gasoline+diesel+when:3d&hl=en-PH&gl=PH&ceid=PH:en"},
+    {"name": "Google News RSS", "url": "https://news.google.com/rss/search?q=fuel+price+rollback+philippines+diesel+gasoline+when:7d&hl=en-PH&gl=PH&ceid=PH:en"},
+    {"name": "GMA News RSS",    "url": "https://data.gmanetwork.com/gno/rss/money/feed.xml"},
+    {"name": "PhilStar RSS",    "url": "https://www.philstar.com/rss/business"},
     ]
 
     scrape_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -59,7 +59,7 @@ def scrape_doe_advisory():
             resp.raise_for_status()
 
             soup  = BeautifulSoup(resp.content, "lxml-xml")
-            items = soup.find_all("item")[:5]
+            items = soup.find_all("item")[:10]
             if not items:
                 print(f"  No items in {source['name']}, trying next...")
                 continue
