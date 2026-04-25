@@ -1,6 +1,21 @@
 import { supabase } from './supabase';
 import React, { useState, useEffect, useRef } from 'react';
 
+// Static fuel dictionary used by autoPopulateFuelTypes (outside component to avoid closure issues)
+const fuelDictionaryStatic = {
+  Petron: ['Blaze 100', 'XCS 95', 'Xtra Advance 93', 'Super Xtra 91', 'Turbo Diesel', 'Diesel Max', 'Kerosene'],
+  Shell: ['V-Power Gasoline 95', 'FuelSave 95', 'FuelSave Unleaded 91', 'V-Power Diesel', 'FuelSave Diesel', 'Kerosene'],
+  Caltex: ['Platinum 95 with Techron', 'Silver 91 with Techron', 'Power Diesel with Techron D', 'Diesel with Techron D', 'Kerosene'],
+  Cleanfuel: ['Premium 95', 'Clean 91', 'Diesel'],
+  'Flying V': ['Gasoline 95', 'Unleaded 91', 'Biodiesel'],
+  SeaOil: ['Extreme 97', 'Extreme 95', 'Extreme U 91', 'Exceed Diesel', 'Kerosene'],
+  Total: ['Excellium 95', 'Premier 91', 'Excellium Diesel', 'Standard Diesel'],
+  Phoenix: ['Premium 98', 'Premium 95', 'Super Regular 91', 'Biodiesel', 'Autogas (LPG)'],
+  Unioil: ['Premium 97', 'Premium 95', 'Unleaded 91', 'Euro 5 Diesel'],
+  Independent: ['Premium 95', 'Unleaded 91', 'Diesel', 'Kerosene'],
+  Default: ['Premium 95', 'Unleaded 91', 'Diesel'],
+};
+
 export default function App() {
   const longPressTimer = useRef(null);
   const deleteHoldTimer = useRef(null);
@@ -248,6 +263,66 @@ export default function App() {
     fetchPrices();
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // AUTO-POPULATE: When a station is added/updated, fill in all
+  // remaining fuel types for that brand.
+  //   • If a sibling station (same brand, same city) already has
+  //     a price for that fuel → copy it (status: Unverified)
+  //   • Otherwise            → insert price = 0 as a placeholder
+  // ─────────────────────────────────────────────────────────────
+  async function autoPopulateFuelTypes(stationId, brandName, cityOfStation, alreadyAddedFuelType) {
+    const allFuelsForBrand = fuelDictionaryStatic[brandName] || fuelDictionaryStatic.Default;
+
+    // Fetch what this station already has
+    const { data: existingRows } = await supabase
+      .from('prices')
+      .select('fuel_type')
+      .eq('station_id', stationId)
+      .neq('status', 'Archived');
+
+    const existingFuelTypes = new Set((existingRows || []).map(r => r.fuel_type));
+
+    // Find all sibling stations of same brand in same city for price lookup
+    const { data: siblingStations } = await supabase
+      .from('stations')
+      .select('id')
+      .ilike('name', `%${brandName}%`)
+      .eq('city', cityOfStation)
+      .neq('id', stationId);
+
+    const siblingIds = (siblingStations || []).map(s => s.id);
+
+    for (const fuel of allFuelsForBrand) {
+      if (existingFuelTypes.has(fuel)) continue; // already present, skip
+
+      let referencePrice = 0;
+
+      // Try to find a price from a sibling station
+      if (siblingIds.length > 0) {
+        const { data: siblingPrices } = await supabase
+          .from('prices')
+          .select('price')
+          .in('station_id', siblingIds)
+          .eq('fuel_type', fuel)
+          .neq('status', 'Archived')
+          .order('id', { ascending: false })
+          .limit(1);
+
+        if (siblingPrices && siblingPrices.length > 0) {
+          referencePrice = siblingPrices[0].price;
+        }
+      }
+
+      await supabase.from('prices').insert([{
+        station_id: stationId,
+        fuel_type: fuel,
+        price: referencePrice,
+        status: 'Unverified',
+        upvotes: 0,
+      }]);
+    }
+  }
+
   async function handleAddStation(e) {
     e.preventDefault();
     const resolvedFuelType = fuelType === 'Other' ? customFuelType.trim() : fuelType;
@@ -271,13 +346,15 @@ export default function App() {
         setAlertModal({ isOpen: true, title: "Update Submitted", message: `Success! Updated ${resolvedFuelType} at ${fullStationName}. Awaiting community verification.`, isError: false });
       } else {
         await supabase.from('prices').insert([{ station_id: stationId, fuel_type: resolvedFuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
+        await autoPopulateFuelTypes(stationId, stationBrand, cityName, resolvedFuelType);
         setAlertModal({ isOpen: true, title: "Fuel Added", message: `Success! Added ${resolvedFuelType} to ${fullStationName}. Awaiting verification.`, isError: false });
       }
     } else {
       const { data: newStation } = await supabase.from('stations').insert([{ name: fullStationName, city: cityName, status: 'Unverified' }]).select();
       if (newStation && newStation.length > 0) {
         await supabase.from('prices').insert([{ station_id: newStation[0].id, fuel_type: resolvedFuelType, price: newPrice, status: 'Unverified', upvotes: 1 }]);
-        setAlertModal({ isOpen: true, title: "Station Added", message: `Thank you! ${fullStationName} is now on the map as an Unverified Location. It will be verified once 2 more drivers confirm it.`, isError: false });
+        await autoPopulateFuelTypes(newStation[0].id, stationBrand, cityName, resolvedFuelType);
+        setAlertModal({ isOpen: true, title: "Station Added", message: `Thank you! ${fullStationName} is now on the map. All known fuel types for ${stationBrand} have been pre-filled — help verify them!`, isError: false });
       }
     }
     setBranchName(''); setPrice(''); setFuelType(''); setCustomFuelType(''); fetchPrices();
@@ -397,6 +474,11 @@ export default function App() {
                   <div className="text-right">
                     {fuel.out_of_stock_votes >= 3 ? (
                       <p className="text-xl font-black text-red-600">OUT OF STOCK</p>
+                    ) : fuel.price === 0 ? (
+                      <div className="flex flex-col items-end">
+                        <span className="text-xs font-bold px-2 py-1 rounded bg-gray-100 text-gray-400 border border-gray-200">No Data</span>
+                        <p className="text-[9px] text-gray-300 mt-1">Tap ✏️ to add price</p>
+                      </div>
                     ) : (
                       <div className="flex flex-col items-end">
                         <p className="text-xl font-black text-gray-900">₱{fuel.price.toFixed(2)}</p>
@@ -408,19 +490,19 @@ export default function App() {
                   </div>
                 </div>
                 <div className="flex justify-between mt-3 pt-2 border-t border-gray-100">
-                  <button
+                  {fuel.price > 0 && <button
                     onClick={(e) => { e.stopPropagation(); handleUpvotePrice(fuel.id, fuel.upvotes, station.id, fuel.fuel_type); }}
                     className="text-blue-600 text-xs font-bold px-2 py-1 hover:bg-blue-50 rounded"
-                  >👍 Confirm</button>
+                  >👍 Confirm</button>}
                   <button
                     onClick={(e) => { e.stopPropagation(); setUpdateModal({ isOpen: true, priceId: fuel.id, currentPrice: fuel.price, stationId: station.id, stationName: station.name, fuelName: fuel.fuel_type }); setNewPriceInput(''); }}
-                    className="text-gray-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded"
-                  >✏️ Update</button>
-                  <button
+                    className={`text-xs font-bold px-2 py-1 rounded ${fuel.price === 0 ? 'text-blue-700 bg-blue-50 hover:bg-blue-100 w-full text-center' : 'text-gray-600 hover:bg-gray-100'}`}
+                  >✏️ {fuel.price === 0 ? 'Add Price' : 'Update'}</button>
+                  {fuel.price > 0 && <button
                     onClick={(e) => { e.stopPropagation(); handleOutOfStock(fuel.id, fuel.out_of_stock_votes); }}
                     className="text-gray-500 hover:text-red-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors"
-                  >🚩 Empty</button>
-                  <button
+                  >🚩 Empty</button>}
+                  {fuel.price > 0 && <button
                     onClick={(e) => { e.stopPropagation(); handleRetiredFuel(fuel.id, fuel.retired_votes); }}
                     onTouchStart={(e) => {
                       e.stopPropagation();
@@ -441,7 +523,7 @@ export default function App() {
                     onMouseUp={() => clearTimeout(deleteHoldTimer.current)}
                     onMouseLeave={() => clearTimeout(deleteHoldTimer.current)}
                     className="text-gray-500 hover:text-orange-600 text-xs font-bold px-2 py-1 hover:bg-gray-100 rounded transition-colors select-none"
-                  >🗑️ Not Sold</button>
+                  >🗑️ Not Sold</button>}
                 </div>
               </div>
             ))}
