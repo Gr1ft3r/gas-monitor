@@ -114,66 +114,6 @@ export default function App() {
     fetchPrices();
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // CASCADE PRICING
-  // ─────────────────────────────────────────────────────────────
-  async function cascadePrice(stationId, fuelTypeName, newPrice, oldPrice, asVerified) {
-    if (fuelTypeName.toLowerCase().includes('kerosene')) return;
-
-    const { data: originStation } = await supabase
-      .from('stations').select('id, name, city').eq('id', stationId).single();
-    if (!originStation) return;
-
-    const brandKeywords = ['Petron', 'Shell', 'Caltex', 'Cleanfuel', 'Phoenix', 'Seaoil', 'Flying V', 'Total'];
-    const matchedBrand = brandKeywords.find(b => originStation.name.toLowerCase().includes(b.toLowerCase()));
-    if (!matchedBrand) return;
-
-    const { data: siblingStations } = await supabase
-      .from('stations').select('id, name')
-      .ilike('name', `%${matchedBrand}%`)
-      .eq('city', originStation.city)
-      .neq('id', stationId);
-
-    if (!siblingStations || siblingStations.length === 0) return;
-
-    const cascadeStatus = asVerified ? 'Verified' : 'Unverified';
-    const cascadeUpvotes = asVerified ? 3 : 1;
-    let cascadeCount = 0;
-
-    for (const sibling of siblingStations) {
-      const { data: siblingCurrentRows } = await supabase
-        .from('prices').select('id, price')
-        .eq('station_id', sibling.id)
-        .eq('fuel_type', fuelTypeName)
-        .neq('status', 'Archived')
-        .order('id', { ascending: false })
-        .limit(1);
-
-      const siblingOldPrice = siblingCurrentRows && siblingCurrentRows.length > 0
-        ? siblingCurrentRows[0].price
-        : oldPrice;
-
-      await supabase.from('prices').update({ status: 'Archived' })
-        .eq('station_id', sibling.id)
-        .eq('fuel_type', fuelTypeName)
-        .neq('status', 'Archived');
-
-      const { error } = await supabase.from('prices').insert([{
-        station_id: sibling.id,
-        fuel_type: fuelTypeName,
-        price: newPrice,
-        old_price: siblingOldPrice,
-        status: cascadeStatus,
-        upvotes: cascadeUpvotes,
-      }]);
-
-      if (!error) cascadeCount++;
-    }
-
-    if (cascadeCount > 0) {
-      console.log(`[CASCADE] ${fuelTypeName} @ ${matchedBrand}/${originStation.city}: updated ${cascadeCount} sibling station(s) as ${cascadeStatus}`);
-    }
-  }
 
   async function handleUpvotePrice(priceId, currentUpvotes, stationId, fuelTypeName) {
     const deviceId = await getDeviceId();
@@ -186,11 +126,9 @@ export default function App() {
     const newUpvoteCount = currentUpvotes + 1;
     if (newUpvoteCount >= 3) {
       await supabase.from('prices').update({ status: 'Archived' }).eq('station_id', stationId).eq('fuel_type', fuelTypeName).eq('status', 'Verified');
-      const { data: verifiedRows } = await supabase.from('prices').update({ upvotes: newUpvoteCount, status: 'Verified' }).eq('id', priceId).select();
+      await supabase.from('prices').update({ upvotes: newUpvoteCount, status: 'Verified' }).eq('id', priceId);
       await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId);
-      if (verifiedRows && verifiedRows.length > 0) {
-        await cascadePrice(stationId, fuelTypeName, verifiedRows[0].price, verifiedRows[0].old_price, false);
-      }
+
     } else {
       await supabase.from('prices').update({ upvotes: newUpvoteCount }).eq('id', priceId);
     }
@@ -214,7 +152,6 @@ export default function App() {
       }]);
       if (isSuperAdmin) {
         await supabase.from('stations').update({ status: 'Active' }).eq('id', stationId).eq('status', 'Unverified');
-        await cascadePrice(stationId, fuelName, newPrice, currentPrice, true);
       }
       fetchPrices();
       setUpdateModal({ isOpen: false });
