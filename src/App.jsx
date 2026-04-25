@@ -267,7 +267,7 @@ export default function App() {
       setAlertModal({ isOpen: true, title: "Missing Fuel Type", message: "Please specify the fuel type in the text field.", isError: true });
       return;
     }
-    const fullStationName = `${stationBrand} - ${branchName}`;
+    const fullStationName = stationBrand === 'Independent' ? branchName.trim() : `${stationBrand} - ${branchName.trim()}`;
     const newPrice = parseFloat(price.replace('*', ''));
     if (isNaN(newPrice) || newPrice < 30 || newPrice > 250) {
       setAlertModal({ isOpen: true, title: "Invalid Input", message: "Please enter a realistic fuel price between ₱30 and ₱250.", isError: true });
@@ -384,7 +384,7 @@ export default function App() {
         >
           <div>
             <h3 className="font-bold text-gray-800 text-md flex items-center flex-wrap gap-2">
-              {showFullName ? station.name : station.name.replace(`${station.brand} - `, '')}
+              {showFullName ? station.name : (station.brand === 'Independent' ? station.name : station.name.replace(`${station.brand} - `, ''))}
               {station.status === 'Unverified' && (
                 <span className="text-[9px] px-1.5 py-0.5 rounded bg-orange-100 text-orange-800 border border-orange-200 uppercase tracking-wider font-bold">⚠️ Unverified</span>
               )}
@@ -468,7 +468,7 @@ export default function App() {
               onClick={(e) => {
                 e.stopPropagation();
                 setStationBrand(station.brand);
-                setBranchName(station.name.replace(`${station.brand} - `, '').trim());
+                setBranchName(station.brand === 'Independent' ? station.name : station.name.replace(`${station.brand} - `, '').trim());
                 window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
               }}
               className="w-full mt-1 py-2 text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 rounded border border-blue-200 border-dashed transition-colors"
@@ -655,7 +655,7 @@ export default function App() {
               <select className="border p-2 rounded text-sm w-1/3 bg-gray-50 font-bold text-blue-800" value={stationBrand} onChange={(e) => { setStationBrand(e.target.value); setFuelType(''); }}>
                 {brands.filter(b => b !== 'Dashboard').map(b => <option key={b} value={b}>{b}</option>)}
               </select>
-              <input type="text" placeholder="Branch (e.g. Loakan Road)" required className="border p-2 rounded text-sm w-2/3 bg-gray-50" value={branchName} onChange={(e) => setBranchName(e.target.value)} />
+              <input type="text" placeholder={stationBrand === 'Independent' ? 'Full name (e.g. En Clean - Lower Magsaysay)' : 'Branch (e.g. Loakan Road)'} required className="border p-2 rounded text-sm w-2/3 bg-gray-50" value={branchName} onChange={(e) => setBranchName(e.target.value)} />
             </div>
             <select className="border p-2 rounded text-sm bg-gray-50" value={cityName} onChange={(e) => setCityName(e.target.value)}>
               <option>Baguio City</option><option>La Trinidad</option><option>Tuba</option>
