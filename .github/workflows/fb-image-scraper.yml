@@ -1,0 +1,42 @@
+name: FB Image Price Scraper
+
+on:
+  schedule:
+    # Runs daily at 8:00 AM Philippine time (UTC+8 = 00:00 UTC)
+    - cron: "0 0 * * *"
+  workflow_dispatch:    # Allow manual trigger from GitHub Actions tab
+    inputs:
+      dry_run:
+        description: "Dry run (no DB writes)?"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+jobs:
+  scrape-fb-prices:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Facebook image price scraper
+        env:
+          SUPABASE_URL:   ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:   ${{ secrets.SUPABASE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          FB_PAGE_URL:    ${{ secrets.FB_PAGE_URL }}
+          FB_TARGET_CITY: ${{ secrets.FB_TARGET_CITY }}
+          DRY_RUN:        ${{ github.event.inputs.dry_run || 'false' }}
+          DEBUG:          "false"
+        run: python scripts/fb_image_scraper.py
