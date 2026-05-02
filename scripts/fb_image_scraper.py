@@ -50,8 +50,14 @@ SUPABASE_HEADERS = {
 
 # Keywords that help us identify the fuel-price post among all page posts
 PRICE_POST_KEYWORDS = [
-    "presyo", "price", "gasolina", "diesel", "petron", "shell",
-    "caltex", "fuel", "pump", "per liter", "bawat litro", "piso",
+    # English terms
+    "price", "fuel", "pump", "monitoring", "as of", "per liter",
+    "pump price", "oil price", "fuel price",
+    # Brand names
+    "petron", "shell", "caltex", "cleanfuel", "seaoil", "phoenix",
+    # Filipino terms
+    "presyo", "gasolina", "diesel", "bawat litro", "piso",
+    # Currency markers
     "₱", "php",
 ]
 
@@ -96,15 +102,37 @@ def fetch_latest_price_image(page_url: str) -> str | None:
 
     try:
         for post in get_posts(page_id, pages=3, options={"images": True, "posts_per_page": 10}):
-            post_text = post.get("text") or post.get("post_text") or ""
-            images    = post.get("images") or []
-            image     = post.get("image")
+            # Collect text from ALL fields facebook-scraper may populate
+            post_text = " ".join(filter(None, [
+                post.get("text"),
+                post.get("post_text"),
+                post.get("header"),
+                post.get("title"),
+                post.get("shared_text"),
+                post.get("link_text"),
+            ]))
+            images = post.get("images") or []
+            image  = post.get("image")
 
             if DEBUG:
-                print(f"  Post snippet: {post_text[:80]!r}")
+                print(f"  Available fields: {[k for k in post.keys()]}")
+                print(f"  Combined text: {post_text[:120]!r}")
                 print(f"  Images found: {len(images)}, single image: {bool(image)}")
 
-            if not _is_price_post(post_text):
+            # Fallback: if the env var FB_GRAB_LATEST is set, take the first
+            # post that has an image regardless of text content — useful when
+            # the page posts price images with no caption.
+            grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
+            has_image   = bool(images or image)
+
+            if not grab_latest and not _is_price_post(post_text):
+                if DEBUG:
+                    print(f"  ↳ Skipped (no matching keywords)")
+                continue
+
+            if grab_latest and not has_image:
+                if DEBUG:
+                    print(f"  ↳ Skipped (FB_GRAB_LATEST=true but no image)")
                 continue
 
             # Prefer the list of images first, then the single image field
