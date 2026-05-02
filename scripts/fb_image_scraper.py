@@ -163,71 +163,168 @@ def _scrape_with_facebook_scraper(page_id: str) -> str | None:
     return None
 
 
-def _scrape_with_requests(page_id: str) -> str | None:
+def _scrape_html_endpoint(label: str, url: str, story_selector, img_filter) -> str | None:
     """
-    Strategy B — direct HTML scrape of the public mobile FB page (mbasic.facebook.com).
-    No login required. Parses <img> tags near price-related text.
-    Falls back gracefully if blocked.
+    Generic HTML scraper helper. Fetches `url`, finds story blocks via `story_selector`,
+    and returns the first image src that passes `img_filter`.
     """
     try:
         from bs4 import BeautifulSoup
     except ImportError:
-        print("[FB-B] BeautifulSoup not installed — skipping HTML fallback.")
-        print("       Fix: pip install beautifulsoup4")
+        print(f"[{label}] BeautifulSoup not installed — pip install beautifulsoup4")
         return None
 
-    url = f"https://mbasic.facebook.com/{page_id}"
+    ua_desktop = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
+    ua_mobile = (
+        "Mozilla/5.0 (Linux; Android 13; Pixel 7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0 Mobile Safari/537.36"
+    )
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 10; SM-G975F) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0 Mobile Safari/537.36"
-        ),
+        "User-Agent": ua_desktop if "mbasic" not in url else ua_mobile,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
     }
 
-    print(f"[FB-B] Trying mbasic.facebook.com/{page_id} ...")
+    print(f"[{label}] Trying {url} ...")
     try:
-        resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+        resp = requests.get(url, headers=headers, timeout=25, allow_redirects=True)
     except Exception as e:
-        print(f"[FB-B] ❌ Request error: {e}")
+        print(f"[{label}] ❌ Request error: {e}")
         return None
 
     if resp.status_code != 200:
-        print(f"[FB-B] ❌ HTTP {resp.status_code}")
+        print(f"[{label}] ❌ HTTP {resp.status_code}")
+        if DEBUG:
+            print(f"  [{label}] Response snippet: {resp.text[:300]!r}")
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
-
-    # mbasic FB renders each story in a <div> with an id starting with "story_"
     grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
     post_count  = 0
 
-    for story in soup.find_all("div", id=lambda x: x and x.startswith("story_")):
+    for story in story_selector(soup):
         post_count += 1
         story_text = story.get_text(" ", strip=True)
 
         if DEBUG:
-            print(f"  [B] Story #{post_count}: {story_text[:120]!r}")
+            print(f"  [{label}] Post #{post_count}: {story_text[:120]!r}")
 
         if not grab_latest and not _is_price_post(story_text):
-            if DEBUG: print(f"  [B] ↳ Skipped (no matching keywords)")
+            if DEBUG: print(f"  [{label}] ↳ Skipped (no keywords)")
             continue
 
-        # Find images inside this story block
-        img_tags = story.find_all("img")
-        for img in img_tags:
+        for img in story.find_all("img"):
             src = img.get("src", "")
-            # Skip tiny thumbnails / avatars (FB profile pics are usually ≤50px)
-            if src and "static" not in src and "emoji" not in src:
-                print(f"[FB-B] ✅ Match on story #{post_count} via HTML scrape")
-                if DEBUG: print(f"  [B] Image src: {src[:100]}")
+            if img_filter(src):
+                print(f"[{label}] ✅ Match on post #{post_count}")
+                if DEBUG: print(f"  [{label}] src: {src[:120]}")
                 return src
 
     if post_count == 0:
-        print("[FB-B] ⚠️  No story divs found — mbasic layout may have changed.")
+        print(f"[{label}] ⚠️  0 post blocks found — page structure may have changed.")
+        if DEBUG:
+            # Dump a snippet so we can diagnose what FB actually returned
+            print(f"  [{label}] Page title: {soup.title.string if soup.title else 'N/A'!r}")
+            print(f"  [{label}] Body snippet: {soup.body.get_text(' ', strip=True)[:400] if soup.body else 'N/A'!r}")
     else:
-        print(f"[FB-B] ⚠️  Scanned {post_count} stories — none matched.")
+        print(f"[{label}] ⚠️  Scanned {post_count} posts — none matched price keywords.")
+
+    return None
+
+
+def _scrape_with_requests(page_id: str) -> str | None:
+    """
+    Strategy B — tries three HTML endpoints in order:
+      B1) mbasic.facebook.com  (lightest, most scraper-friendly)
+      B2) m.facebook.com       (mobile site, richer markup)
+      B3) www.facebook.com     (full site — JS-heavy but sometimes has og:image meta tags)
+    """
+    grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
+
+    # ── B1: mbasic ──────────────────────────────────────────────────────────
+    def mbasic_stories(soup):
+        # mbasic wraps each post in a <div id="story_...">
+        stories = soup.find_all("div", id=lambda x: x and x.startswith("story_"))
+        if not stories:
+            # Newer mbasic layout sometimes uses article tags
+            stories = soup.find_all("article")
+        return stories
+
+    def mbasic_img(src):
+        return bool(src) and "static" not in src and "emoji" not in src and len(src) > 30
+
+    result = _scrape_html_endpoint(
+        "FB-B1",
+        f"https://mbasic.facebook.com/{page_id}",
+        mbasic_stories,
+        mbasic_img,
+    )
+    if result:
+        return result
+
+    # ── B2: m.facebook.com ──────────────────────────────────────────────────
+    def mobile_stories(soup):
+        # Mobile FB wraps stories in div[data-ft] or div[data-store]
+        stories = soup.find_all("div", attrs={"data-ft": True})
+        if not stories:
+            stories = soup.find_all("div", class_=lambda c: c and "story" in c.lower())
+        return stories
+
+    def mobile_img(src):
+        return bool(src) and "scontent" in src and len(src) > 30
+
+    result = _scrape_html_endpoint(
+        "FB-B2",
+        f"https://m.facebook.com/{page_id}",
+        mobile_stories,
+        mobile_img,
+    )
+    if result:
+        return result
+
+    # ── B3: og:image meta tag from www.facebook.com ─────────────────────────
+    # FB's www site is JS-heavy but the <meta property="og:image"> in the <head>
+    # often still contains the latest post image for public pages.
+    try:
+        from bs4 import BeautifulSoup
+        headers_www = {
+            "User-Agent": (
+                "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        print(f"[FB-B3] Trying og:image meta from www.facebook.com/{page_id} ...")
+        r = requests.get(
+            f"https://www.facebook.com/{page_id}",
+            headers=headers_www, timeout=25, allow_redirects=True,
+        )
+        if r.status_code == 200:
+            soup = BeautifulSoup(r.text, "html.parser")
+            og = soup.find("meta", property="og:image")
+            if og and og.get("content"):
+                img_url = og["content"]
+                if grab_latest or _is_price_post(soup.get_text(" ", strip=True)[:2000]):
+                    print(f"[FB-B3] ✅ Found og:image meta tag")
+                    if DEBUG: print(f"  [FB-B3] og:image: {img_url[:120]}")
+                    return img_url
+                else:
+                    print(f"[FB-B3] ⚠️  og:image found but page text has no price keywords.")
+                    print(f"         Set FB_GRAB_LATEST=true to use it anyway.")
+        else:
+            print(f"[FB-B3] ❌ HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[FB-B3] ❌ Error: {e}")
 
     return None
 
