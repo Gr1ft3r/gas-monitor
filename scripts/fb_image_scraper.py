@@ -75,34 +75,42 @@ def _is_price_post(text: str) -> bool:
     return any(kw.lower() in text_lower for kw in PRICE_POST_KEYWORDS)
 
 
-def fetch_latest_price_image(page_url: str) -> str | None:
+def _scrape_with_facebook_scraper(page_id: str) -> str | None:
     """
-    Fetch the latest fuel-price image URL from a public Facebook page.
-
-    Strategy:
-      1. Use facebook-scraper to pull recent posts (no login needed for public pages)
-      2. Filter by price-related keywords
-      3. Return the first image URL found
-
-    Returns:
-        URL string of the image, or None if not found.
+    Strategy A — use facebook-scraper library (works on public pages,
+    but may return 0 posts if Facebook's structure changed or blocks the request).
+    Requires: pip install facebook-scraper lxml_html_clean
+    Optional: set FB_COOKIES env var to a Netscape-format cookies file path for
+              authenticated access (greatly improves reliability).
     """
     try:
         from facebook_scraper import get_posts
     except ImportError:
         raise ImportError(
             "facebook-scraper is not installed.\n"
-            "Run: pip install facebook-scraper"
+            "Run: pip install facebook-scraper lxml_html_clean"
         )
 
-    # Extract page identifier from URL
-    # e.g. https://www.facebook.com/pagename → "pagename"
-    page_id = page_url.rstrip("/").split("/")[-1]
-    print(f"[FB] Fetching recent posts from page: {page_id}")
+    grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
+    cookies     = os.environ.get("FB_COOKIES", None)   # path to Netscape cookies file
 
+    options = {
+        "images":           True,
+        "posts_per_page":   10,
+        "allow_extra_requests": True,
+    }
+    if cookies:
+        print(f"[FB-A] Using cookies file: {cookies}")
+
+    kwargs = dict(pages=5, options=options)
+    if cookies:
+        kwargs["cookies"] = cookies
+
+    post_count = 0
     try:
-        for post in get_posts(page_id, pages=3, options={"images": True, "posts_per_page": 10}):
-            # Collect text from ALL fields facebook-scraper may populate
+        for post in get_posts(page_id, **kwargs):
+            post_count += 1
+
             post_text = " ".join(filter(None, [
                 post.get("text"),
                 post.get("post_text"),
@@ -115,38 +123,145 @@ def fetch_latest_price_image(page_url: str) -> str | None:
             image  = post.get("image")
 
             if DEBUG:
-                print(f"  Available fields: {[k for k in post.keys()]}")
-                print(f"  Combined text: {post_text[:120]!r}")
-                print(f"  Images found: {len(images)}, single image: {bool(image)}")
+                print(f"  [A] Post #{post_count} fields: {list(post.keys())}")
+                print(f"  [A] Text: {post_text[:120]!r}")
+                print(f"  [A] Images: {len(images)} list + {'1' if image else '0'} single")
 
-            # Fallback: if the env var FB_GRAB_LATEST is set, take the first
-            # post that has an image regardless of text content — useful when
-            # the page posts price images with no caption.
-            grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
-            has_image   = bool(images or image)
+            has_image = bool(images or image)
 
-            if not grab_latest and not _is_price_post(post_text):
-                if DEBUG:
-                    print(f"  ↳ Skipped (no matching keywords)")
-                continue
+            if grab_latest:
+                if not has_image:
+                    if DEBUG: print(f"  [A] ↳ Skipped (no image)")
+                    continue
+            else:
+                if not _is_price_post(post_text):
+                    if DEBUG: print(f"  [A] ↳ Skipped (no matching keywords)")
+                    continue
 
-            if grab_latest and not has_image:
-                if DEBUG:
-                    print(f"  ↳ Skipped (FB_GRAB_LATEST=true but no image)")
-                continue
-
-            # Prefer the list of images first, then the single image field
             if images:
-                print(f"[FB] ✅ Price post found — using first image ({len(images)} total)")
+                print(f"[FB-A] ✅ Match on post #{post_count} — {len(images)} image(s)")
                 return images[0]
             elif image:
-                print(f"[FB] ✅ Price post found — using single image field")
+                print(f"[FB-A] ✅ Match on post #{post_count} — single image field")
                 return image
 
     except Exception as e:
-        print(f"[FB] ❌ facebook-scraper error: {e}")
-        print("     Tip: Facebook may have changed their page structure.")
-        print("     Try updating: pip install --upgrade facebook-scraper")
+        print(f"[FB-A] ❌ facebook-scraper error: {e}")
+        if "lxml" in str(e).lower():
+            print("     Fix: pip install lxml_html_clean")
+        else:
+            print("     Tip: pip install --upgrade facebook-scraper")
+
+    if post_count == 0:
+        print("[FB-A] ⚠️  facebook-scraper returned 0 posts.")
+        print("     This usually means Facebook blocked the unauthenticated request.")
+        print("     → Try setting FB_COOKIES to a Netscape cookies file.")
+        print("     → Or set FB_GRAB_LATEST=true if all posts on this page are price posts.")
+    else:
+        print(f"[FB-A] ⚠️  Scanned {post_count} posts — none matched price keywords.")
+
+    return None
+
+
+def _scrape_with_requests(page_id: str) -> str | None:
+    """
+    Strategy B — direct HTML scrape of the public mobile FB page (mbasic.facebook.com).
+    No login required. Parses <img> tags near price-related text.
+    Falls back gracefully if blocked.
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("[FB-B] BeautifulSoup not installed — skipping HTML fallback.")
+        print("       Fix: pip install beautifulsoup4")
+        return None
+
+    url = f"https://mbasic.facebook.com/{page_id}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 10; SM-G975F) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Mobile Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    print(f"[FB-B] Trying mbasic.facebook.com/{page_id} ...")
+    try:
+        resp = requests.get(url, headers=headers, timeout=20, allow_redirects=True)
+    except Exception as e:
+        print(f"[FB-B] ❌ Request error: {e}")
+        return None
+
+    if resp.status_code != 200:
+        print(f"[FB-B] ❌ HTTP {resp.status_code}")
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # mbasic FB renders each story in a <div> with an id starting with "story_"
+    grab_latest = os.environ.get("FB_GRAB_LATEST", "false").lower() == "true"
+    post_count  = 0
+
+    for story in soup.find_all("div", id=lambda x: x and x.startswith("story_")):
+        post_count += 1
+        story_text = story.get_text(" ", strip=True)
+
+        if DEBUG:
+            print(f"  [B] Story #{post_count}: {story_text[:120]!r}")
+
+        if not grab_latest and not _is_price_post(story_text):
+            if DEBUG: print(f"  [B] ↳ Skipped (no matching keywords)")
+            continue
+
+        # Find images inside this story block
+        img_tags = story.find_all("img")
+        for img in img_tags:
+            src = img.get("src", "")
+            # Skip tiny thumbnails / avatars (FB profile pics are usually ≤50px)
+            if src and "static" not in src and "emoji" not in src:
+                print(f"[FB-B] ✅ Match on story #{post_count} via HTML scrape")
+                if DEBUG: print(f"  [B] Image src: {src[:100]}")
+                return src
+
+    if post_count == 0:
+        print("[FB-B] ⚠️  No story divs found — mbasic layout may have changed.")
+    else:
+        print(f"[FB-B] ⚠️  Scanned {post_count} stories — none matched.")
+
+    return None
+
+
+def fetch_latest_price_image(page_url: str) -> str | None:
+    """
+    Fetch the latest fuel-price image URL from a public Facebook page.
+
+    Tries two strategies in order:
+      A) facebook-scraper library  (best quality, may be blocked without cookies)
+      B) Direct mbasic.facebook.com HTML scrape  (fallback, no extra deps)
+
+    Environment variables:
+      FB_COOKIES     — path to Netscape cookies file → makes Strategy A much more reliable
+      FB_GRAB_LATEST — "true" → skip keyword matching, grab first post with an image
+      DEBUG          — "true" → verbose per-post logging
+
+    Returns:
+        URL string of the image, or None if neither strategy found anything.
+    """
+    page_id = page_url.rstrip("/").split("/")[-1]
+    print(f"[FB] Fetching recent posts from page: {page_id}")
+
+    # ── Strategy A ─────────────────────────────────────────
+    print("[FB] Trying Strategy A: facebook-scraper ...")
+    result = _scrape_with_facebook_scraper(page_id)
+    if result:
+        return result
+
+    # ── Strategy B ─────────────────────────────────────────
+    print("[FB] Strategy A found nothing. Trying Strategy B: HTML scrape ...")
+    result = _scrape_with_requests(page_id)
+    if result:
+        return result
 
     print("[FB] ⚠️  No price image found in recent posts.")
     return None
